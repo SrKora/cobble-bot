@@ -1685,27 +1685,9 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
     def miembro_de(inter: discord.Interaction) -> discord.Member | None:
         return inter.user if isinstance(inter.user, discord.Member) else None
 
-    def simple(t: str | None) -> str:
-        return re.sub(r"[^a-z0-9]", "", (t or "").lower())
-
     async def ac_vincular(inter: discord.Interaction, actual: str):
-        """Los admins ven a todos. El resto solo su propio jugador: el ya vinculado o, si aún no lo está,
-        el conectado cuyo nombre se parece a su nombre de Discord. Si no se encuentra, lo escribe él."""
-        if bot.es_admin(inter.user):
-            return await ac_jugador(inter, actual)
-        propio = bot.registro.jugador_de(inter.user.id)
-        if propio:
-            return [app_commands.Choice(name=f"{propio} (ya vinculado)", value=propio)]
-        claves = {simple(x) for x in (inter.user.name, inter.user.display_name,
-                                      getattr(inter.user, "global_name", None)) if len(simple(x)) >= 3}
-        parecidos = [n for n in sorted(bot._online_previo or (), key=str.lower)
-                     if any(simple(n) == k or (len(simple(n)) >= 3 and (simple(n) in k or k in simple(n)))
-                            for k in claves)]
-        opciones = [app_commands.Choice(name=f"🟢 {n} (conectado)", value=n) for n in parecidos]
-        escrito = nombre_jugador(actual) if actual else ""
-        if RE_NOMBRE_MC.match(escrito) and escrito.lower() not in {n.lower() for n in parecidos}:
-            opciones.append(app_commands.Choice(name=escrito, value=escrito))
-        return opciones[:25]
+        """Los jugadores de siempre, menos los que ya tienen su Discord vinculado."""
+        return [c for c in await ac_jugador(inter, actual) if not bot.registro.discord_de(c.value)]
 
     @grupo.command(name="vincular", description="Une tu cuenta de Discord con tu jugador de Minecraft (tienes que estar conectado)")
     @app_commands.describe(jugador="Tu nombre en Minecraft")
