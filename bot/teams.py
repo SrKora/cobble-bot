@@ -27,13 +27,28 @@ class Team:
     nombre: str          # nombre bonito
     rol: str             # rol de Discord: nombre exacto o ID
     color: str = "white"
-    prefijo: str = ""    # delante del nombre en el chat y la lista de jugadores
+    etiqueta: str = ""   # sale como [Etiqueta] delante del jugador (chat, lista de jugadores, encima de la cabeza)
     fuego_amigo: bool = False
     emoji: str = ""
 
     @property
     def titulo(self) -> str:
         return f"{self.emoji} {self.nombre}".strip()
+
+
+def etiqueta_de(texto: str) -> str:
+    """'[Los Dragones] ' -> 'Los Dragones' (lo de dentro de los corchetes, sin espacios de sobra)."""
+    t = " ".join(str(texto).split())
+    while t.startswith("[") and t.endswith("]"):
+        t = t[1:-1].strip()
+    return t.strip("[]").strip()[:24]
+
+
+def prefijo_json(etiqueta: str, color: str) -> str:
+    """Prefijo del team: '[Etiqueta] ' con los corchetes en gris y la etiqueta del color del team.
+    Minecraft lo pone delante del nombre del jugador en el chat, en la lista de jugadores y encima de su cabeza."""
+    return json.dumps({"text": "[", "color": "gray", "extra": [
+        {"text": etiqueta_de(etiqueta), "color": color}, {"text": "] ", "color": "gray"}]}, ensure_ascii=False)
 
 
 def cargar_teams(cfg: dict) -> dict[str, Team]:
@@ -43,14 +58,15 @@ def cargar_teams(cfg: dict) -> dict[str, Team]:
         if not RE_ID_TEAM.match(tid) or not t.get("rol"):
             continue
         teams[tid] = Team(tid, str(t.get("nombre") or tid), str(t["rol"]), str(t.get("color", "white")),
-                          str(t.get("prefijo", "")), bool(t.get("fuego_amigo", False)), str(t.get("emoji", "")))
+                          etiqueta_de(t.get("etiqueta") or t.get("prefijo") or t.get("nombre") or tid),
+                          bool(t.get("fuego_amigo", False)), str(t.get("emoji", "")))
     return teams
 
 
 def comandos_crear(t: Team) -> list[str]:
-    """Comandos (idempotentes) para que el team exista en Minecraft con su color y prefijo."""
+    """Comandos (idempotentes) para que el team exista en Minecraft con su color y su [etiqueta]."""
     nombre = json.dumps({"text": t.nombre, "color": t.color}, ensure_ascii=False)
-    prefijo = json.dumps({"text": t.prefijo, "color": t.color}, ensure_ascii=False)
+    prefijo = prefijo_json(t.etiqueta or t.nombre, t.color)
     return [
         f"team add {t.id} {nombre}",                      # si ya existe, el servidor solo avisa
         f"team modify {t.id} displayName {nombre}",

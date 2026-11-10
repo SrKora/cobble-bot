@@ -4,7 +4,7 @@ Bot de Discord para servidores de Minecraft con **Cobblemon**, pensado para el m
 
 - 📊 **Para todos:** fichas de jugador, equipos, medallas por región y rankings.
 - 🎁 **Para tu equipo:** regala Pokémon (con IVs, EVs, movimientos…), dinero y objetos desde Discord.
-- 🛡️ **Teams:** equipos con color y prefijo en el juego, sincronizados con roles de Discord, y ranking entre teams.
+- 🛡️ **Teams:** equipos con color y `[etiqueta]` en el chat del juego, sincronizados con roles de Discord, y ranking entre teams.
 - 🔧 **Para los admins:** gestiona el servidor (expulsar, banear, whitelist, clima, mensajes en pantalla, reinicios…) sin entrar al juego.
 - 🟢 **Avisos:** el bot avisa en un canal cuando el servidor se cae, se reinicia y **en cuanto se puede volver a entrar**.
 
@@ -228,7 +228,7 @@ Al escribir un **jugador** salen sugerencias; los conectados aparecen arriba con
 | `/team info [team]` | Miembros de cada team |
 | `/team ranking categoría [región]` | Qué team va ganando: suma de sus miembros (medallas, capturas, horas…) y el MVP de cada uno |
 
-Al unirte, el bot te pone el **rol de Discord** del team y te mete en el **team de Minecraft** (nombre con su color y prefijo en el chat y en la lista de jugadores; sin fuego amigo si así está configurado).
+Al unirte, el bot te pone el **rol de Discord** del team y te mete en el **team de Minecraft** (en el chat, la lista de jugadores y encima de tu cabeza sale `[Etiqueta] TuNombre` con el color del team; sin fuego amigo si así está configurado).
 
 ### Regalos (roles de `DISCORD_ROLES_REGALOS` y admins)
 
@@ -306,12 +306,12 @@ Si una variable está en el `.env`, manda sobre `config.toml`. Tras cambiar cual
 | `[comandos]` | Comandos permitidos en `/comando` (no pongas `"*"`) |
 | `[cobbleverse]` | Símbolo y carpeta del dinero, y qué logros cuentan como medallas y ligas |
 | `[rankings_cobblemon]` | Rankings extra de `/top` a partir de estadísticas de Cobblemon |
-| `[[teams]]` | Un bloque por team: id en Minecraft, nombre, rol de Discord, color, prefijo, emoji y fuego amigo. Sin bloques, no hay `/team` |
+| `[[teams]]` | Un bloque por team: id en Minecraft, nombre, rol de Discord, color, etiqueta (lo que sale entre `[]`), emoji y fuego amigo. Sin bloques, no hay `/team` |
 
 ### Cómo funcionan los teams
 
 - **Manda Discord.** Si un admin pone o quita a mano el rol de un team en Discord, el bot lo copia a Minecraft (lo comprueba cada 5 minutos). Si alguien cambia de team **dentro del juego** con `/team`, el bot lo deshace. Los jugadores sin vincular no se tocan.
-- Los teams de Minecraft los crea el propio bot con comandos (`/team add`, colores, prefijo…) al arrancar y cada vez que el servidor vuelve a estar en pie. Se guardan en el mundo como cualquier team.
+- Los teams de Minecraft los crea el propio bot con comandos (`/team add`, colores, `[etiqueta]`…) al arrancar y cada vez que el servidor vuelve a estar en pie. Se guardan en el mundo como cualquier team.
 - Lo que el bot recuerda (quién es quién y en qué team está) va en su carpeta **`datos/`** (`datos/teams.json`), **no** en el servidor. Es la única carpeta en la que escribe. Contiene IDs de Discord y nombres de jugadores: no la compartas (está en `.gitignore`).
 - Si el bot no tiene permiso para gestionar roles, el jugador entra igualmente en el team de Minecraft y el rol de Discord se pone solo en cuanto se arreglen los permisos.
 

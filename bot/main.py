@@ -187,7 +187,7 @@ class CobbleBot(discord.Client):
         return None
 
     async def preparar_teams_mc(self):
-        """Crea los teams en Minecraft con su color y prefijo (si ya existen, solo los actualiza)."""
+        """Crea los teams en Minecraft con su color y su [etiqueta] (si ya existen, solo los actualiza)."""
         try:
             for t in self.teams.values():
                 for c in comandos_crear(t):

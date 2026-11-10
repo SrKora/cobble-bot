@@ -171,10 +171,16 @@ async def main():
 
         # --- Teams: config, comandos de Minecraft, miembros y registro de vínculos
         teams = cargar_teams({"teams": [
-            {"id": "rojo", "nombre": "Equipo Rojo", "rol": "Equipo Rojo", "color": "red", "prefijo": "[R] "},
+            {"id": "rojo", "nombre": "Equipo Rojo", "rol": "Equipo Rojo", "color": "red", "prefijo": "[R] "},  # formato antiguo: sigue valiendo
+            {"id": "azul", "nombre": "Los Azules", "rol": "Azul", "color": "blue"},   # sin etiqueta: el nombre
+            {"id": "verde", "nombre": "Verde", "rol": "Verde", "color": "green", "etiqueta": "[[VRD]]"},
             {"id": "mal id!", "rol": "x"},          # id no válido: se ignora
         ]})
-        assert list(teams) == ["rojo"]
+        assert list(teams) == ["rojo", "azul", "verde"]
+        assert [t.etiqueta for t in teams.values()] == ["R", "Los Azules", "VRD"]    # siempre entre [] una sola vez
+        pre = comandos_crear(teams["rojo"])[3].split(" prefix ", 1)[1]
+        assert pre.startswith('{"text": "[", "color": "gray"') and '{"text": "R", "color": "red"}' in pre
+        assert '{"text": "] ", "color": "gray"}' in pre
         cmds = comandos_crear(teams["rojo"])
         assert cmds[0] == 'team add rojo {"text": "Equipo Rojo", "color": "red"}' and "friendlyFire false" in cmds[4]
         assert parsear_miembros("Team [Equipo Rojo] has 2 member(s): Ana, Luis") == ["Ana", "Luis"]
