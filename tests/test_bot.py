@@ -183,6 +183,7 @@ async def main():
         assert '{"text": "] ", "color": "gray"}' in pre
         cmds = comandos_crear(teams["rojo"])
         assert cmds[0] == 'team add rojo {"text": "Equipo Rojo", "color": "red"}' and "friendlyFire false" in cmds[4]
+        assert cmds[2] == "team modify rojo color reset"          # el nombre del jugador no se pinta
         assert parsear_miembros("Team [Equipo Rojo] has 2 member(s): Ana, Luis") == ["Ana", "Luis"]
         assert parsear_miembros("There are no members on team [Equipo Rojo]") == []
         reg = Registro(Path(tmp) / "datos")

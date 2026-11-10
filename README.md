@@ -228,7 +228,7 @@ Al escribir un **jugador** salen sugerencias; los conectados aparecen arriba con
 | `/team info [team]` | Miembros de cada team |
 | `/team ranking categoría [región]` | Qué team va ganando: suma de sus miembros (medallas, capturas, horas…) y el MVP de cada uno |
 
-Al unirte, el bot te pone el **rol de Discord** del team y te mete en el **team de Minecraft** (en el chat, la lista de jugadores y encima de tu cabeza sale `[Etiqueta] TuNombre` con el color del team; sin fuego amigo si así está configurado).
+Al unirte, el bot te pone el **rol de Discord** del team y te mete en el **team de Minecraft** (en el chat, la lista de jugadores y encima de tu cabeza sale `[Etiqueta] TuNombre`, con la etiqueta del color del team y tu nombre normal; sin fuego amigo si así está configurado).
 
 ### Regalos (roles de `DISCORD_ROLES_REGALOS` y admins)
 

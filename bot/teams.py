@@ -70,7 +70,7 @@ def comandos_crear(t: Team) -> list[str]:
     return [
         f"team add {t.id} {nombre}",                      # si ya existe, el servidor solo avisa
         f"team modify {t.id} displayName {nombre}",
-        f"team modify {t.id} color {t.color}",
+        f"team modify {t.id} color reset",                # el color va solo en la [etiqueta], no en el nombre
         f"team modify {t.id} prefix {prefijo}",
         f"team modify {t.id} friendlyFire {'true' if t.fuego_amigo else 'false'}",
         f"team modify {t.id} seeFriendlyInvisibles true",
