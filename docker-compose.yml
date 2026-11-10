@@ -14,12 +14,23 @@ services:
     env_file: .env
     environment:
       MC_CARPETA_SERVIDOR: /data      # dentro del contenedor el servidor siempre está en /data
+      BOT_DATOS: /datos               # lo que recuerda el bot (vínculos y teams): carpeta ./datos
     volumes:
       - ${MC_DATOS:?Falta MC_DATOS en el .env (carpeta data del servidor)}:/data:ro
       - ./config.toml:/config/config.toml:ro
+      - ./datos:/datos                # carpeta del BOT (no del servidor): única con escritura
     networks:
       - servidor
     restart: unless-stopped
+    # Endurecido: si alguna vez hubiera un fallo en el bot, dentro del contenedor no se podría hacer nada.
+    read_only: true                   # el sistema de archivos del contenedor no se puede modificar…
+    tmpfs:
+      - /tmp                          # …salvo /tmp, en memoria y que se borra al reiniciar
+    security_opt:
+      - no-new-privileges:true        # ningún proceso puede ganar más permisos (sudo, setuid…)
+    cap_drop:
+      - ALL                           # sin ningún privilegio especial de Linux (el bot no necesita ninguno)
+    pids_limit: 256                   # tope de procesos
 
 networks:
   servidor:
