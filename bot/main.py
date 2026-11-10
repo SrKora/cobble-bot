@@ -81,15 +81,28 @@ def esc(t: str) -> str:
     return discord.utils.escape_markdown(t)
 
 
+RE_UUID_LIST = re.compile(r"\s*\([0-9a-fA-F-]{32,36}\)")
+RE_ADORNO = re.compile(r"\[[^\]]*\]")
+CMD_LIST = "list uuids"   # con uuids, Minecraft da el nombre a secas (sin la [etiqueta] del team)
+
+
+def nombre_jugador(texto: str) -> str:
+    """'[MVP] Ash_K', '🟢 Ash_K (conectado)', 'Ash_K (uuid)' -> 'Ash_K' (el nombre de Minecraft a secas)."""
+    t = RE_ADORNO.sub(" ", RE_UUID_LIST.sub("", limpiar(texto)))
+    t = t.replace("(conectado)", " ")
+    validos = [x for x in re.split(r"[\s,]+", t) if RE_NOMBRE_MC.match(x)]
+    return validos[0] if validos else texto.strip()
+
+
 def parsear_list(respuesta: str) -> tuple[int, int, list[str]]:
-    """'There are 2 of a max of 20 players online: Ana, Luis' -> (2, 20, ['Ana', 'Luis'])"""
+    """'There are 2 of a max of 20 players online: Ana, [MVP] Luis (uuid)' -> (2, 20, ['Ana', 'Luis'])"""
     t = limpiar(respuesta)
     nums = re.findall(r"\d+", t.split(":")[0])
     online = int(nums[0]) if nums else 0
     maximo = int(nums[1]) if len(nums) > 1 else 0
     nombres = []
     if ":" in t:
-        nombres = [n.strip() for n in t.split(":", 1)[1].split(",") if n.strip()]
+        nombres = [nombre_jugador(n) for n in t.split(":", 1)[1].split(",") if n.strip()]
     return online, maximo, nombres
 
 
@@ -488,7 +501,7 @@ class CobbleBot(discord.Client):
     @tasks.loop(seconds=30)
     async def monitor(self):
         try:
-            online, maximo, nombres = parsear_list(await self.rcon.comando("list"))
+            online, maximo, nombres = parsear_list(await self.rcon.comando(CMD_LIST))
             self._fallos = 0
         except RconError:
             self._fallos += 1
@@ -807,6 +820,7 @@ def registrar_comandos(bot: CobbleBot):
                 for k, c in bot.categorias.items() if a in c.titulo.lower() or a in k][:25]
 
     async def perfil_o_error(inter: discord.Interaction, jugador: str) -> Perfil | None:
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         if not bot.perfiles:
             await inter.followup.send("Las estadísticas no están configuradas (sección [archivos]).")
             return None
@@ -827,7 +841,7 @@ def registrar_comandos(bot: CobbleBot):
     async def estado(inter: discord.Interaction):
         await inter.response.defer()
         try:
-            online, maximo, nombres = parsear_list(await bot.rcon.comando("list"))
+            online, maximo, nombres = parsear_list(await bot.rcon.comando(CMD_LIST))
         except RconError:
             await inter.followup.send(embed=discord.Embed(
                 title="🔴 Servidor offline", description="No responde ahora mismo.", color=0x8B0000))
@@ -843,7 +857,7 @@ def registrar_comandos(bot: CobbleBot):
     async def jugadores(inter: discord.Interaction):
         await inter.response.defer()
         try:
-            online, maximo, nombres = parsear_list(await bot.rcon.comando("list"))
+            online, maximo, nombres = parsear_list(await bot.rcon.comando(CMD_LIST))
         except RconError as e:
             await inter.followup.send(f"No pude contactar con el servidor: {e}")
             return
@@ -859,6 +873,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.describe(jugador="Nombre del jugador en Minecraft")
     @app_commands.autocomplete(jugador=ac_jugador)
     async def stats(inter: discord.Interaction, jugador: str):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         await inter.response.defer()
         if p := await perfil_o_error(inter, jugador):
             await inter.followup.send(embed=embed_perfil(bot, p))
@@ -868,6 +883,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.describe(jugador="Nombre del jugador en Minecraft")
     @app_commands.autocomplete(jugador=ac_jugador)
     async def equipo(inter: discord.Interaction, jugador: str):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         await inter.response.defer()
         if p := await perfil_o_error(inter, jugador):
             await inter.followup.send(embed=embed_equipo(p))
@@ -878,6 +894,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.autocomplete(jugador=ac_jugador)
     @app_commands.choices(region=OPCIONES_REGION)
     async def medallas(inter: discord.Interaction, jugador: str, region: app_commands.Choice[str] | None = None):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         await inter.response.defer()
         if p := await perfil_o_error(inter, jugador):
             await inter.followup.send(embed=embed_medallas(p, region.value if region else None))
@@ -951,6 +968,7 @@ def registrar_comandos(bot: CobbleBot):
 
     async def ejecutar(inter: discord.Interaction, comando: str, que: str, jugador: str | None = None,
                        publico: bool = False):
+        jugador = nombre_jugador(jugador) if jugador else jugador   # sin [etiqueta] ni '🟢 … (conectado)'
         """Comprueba que es admin, lanza el comando por RCON, responde y lo deja registrado."""
         if not bot.es_admin(inter.user):
             await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
@@ -989,6 +1007,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.describe(jugador="Jugador conectado", motivo="Motivo (lo verá el jugador)")
     @app_commands.autocomplete(jugador=ac_jugador)
     async def adm_expulsar(inter: discord.Interaction, jugador: str, motivo: str | None = None):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         m = texto_seguro(motivo)
         await ejecutar(inter, f"kick {jugador} {m}".strip(), f"Expulsado **{esc(jugador)}**" + (f" ({m})" if m else ""),
                        jugador)
@@ -997,6 +1016,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.describe(jugador="Jugador", motivo="Motivo (lo verá el jugador)")
     @app_commands.autocomplete(jugador=ac_jugador)
     async def adm_banear(inter: discord.Interaction, jugador: str, motivo: str | None = None):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         m = texto_seguro(motivo)
         await ejecutar(inter, f"ban {jugador} {m}".strip(), f"Baneado **{esc(jugador)}**" + (f" ({m})" if m else ""),
                        jugador)
@@ -1005,6 +1025,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.describe(jugador="Jugador baneado")
     @app_commands.autocomplete(jugador=ac_baneado)
     async def adm_desbanear(inter: discord.Interaction, jugador: str):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         await ejecutar(inter, f"pardon {jugador}", f"Desbaneado **{esc(jugador)}**", jugador)
 
     @admin.command(name="baneados", description="Lista de jugadores baneados")
@@ -1018,6 +1039,7 @@ def registrar_comandos(bot: CobbleBot):
         ("Activar (solo entran los de la lista)", "on"), ("Desactivar (entra cualquiera)", "off"))])
     @app_commands.autocomplete(jugador=ac_jugador)
     async def adm_whitelist(inter: discord.Interaction, accion: app_commands.Choice[str], jugador: str | None = None):
+        jugador = nombre_jugador(jugador) if jugador else jugador   # sin [etiqueta] ni '🟢 … (conectado)'
         if accion.value in ("add", "remove"):
             if not jugador:
                 await inter.response.send_message("Pon el jugador que quieres añadir o quitar.", ephemeral=True)
@@ -1037,6 +1059,7 @@ def registrar_comandos(bot: CobbleBot):
                             value="deop")])
     @app_commands.autocomplete(jugador=ac_jugador)
     async def adm_op(inter: discord.Interaction, jugador: str, accion: app_commands.Choice[str]):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         if accion.value == "op":
             await ejecutar(inter, f"op {jugador}",
                            f"**{esc(jugador)}** es operador (nivel 4 · {NIVELES_OP[4][0]}: {NIVELES_OP[4][1]})", jugador)
@@ -1065,12 +1088,15 @@ def registrar_comandos(bot: CobbleBot):
         ("Supervivencia", "survival"), ("Creativo", "creative"), ("Aventura", "adventure"), ("Espectador", "spectator"))])
     @app_commands.autocomplete(jugador=ac_jugador)
     async def adm_modo(inter: discord.Interaction, jugador: str, modo: app_commands.Choice[str]):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         await ejecutar(inter, f"gamemode {modo.value} {jugador}", f"**{esc(jugador)}** en modo {modo.name}", jugador)
 
     @admin.command(name="teletransportar", description="Lleva a un jugador hasta otro jugador")
     @app_commands.describe(jugador="Jugador que se mueve", destino="Jugador al que va")
     @app_commands.autocomplete(jugador=ac_jugador, destino=ac_jugador)
     async def adm_tp(inter: discord.Interaction, jugador: str, destino: str):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
+        destino = nombre_jugador(destino)   # sin [etiqueta] ni '🟢 … (conectado)'
         if not RE_NOMBRE_MC.match(destino):
             await inter.response.send_message("El destino no es un nombre válido.", ephemeral=True)
             return
@@ -1122,6 +1148,7 @@ def registrar_comandos(bot: CobbleBot):
                           negrita: bool = False, cursiva: bool = False, subrayado: bool = False,
                           tachado: bool = False, ofuscado: bool = False,
                           segundos: app_commands.Range[float, 1, 30] = 3.0, firma: bool = True):
+        jugador = nombre_jugador(jugador) if jugador else jugador   # sin [etiqueta] ni '🟢 … (conectado)'
         t = texto_seguro(texto, 250)
         if not t:
             await inter.response.send_message("El mensaje está vacío.", ephemeral=True)
@@ -1159,6 +1186,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.describe(jugador="Jugador conectado")
     @app_commands.autocomplete(jugador=ac_jugador)
     async def adm_curar(inter: discord.Interaction, jugador: str):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         await ejecutar(inter, f"pokeheal {jugador}", f"Pokémon de **{esc(jugador)}** curados", jugador)
 
     @admin.command(name="experiencia", description="Da (o quita, con número negativo) experiencia a un jugador")
@@ -1168,6 +1196,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.autocomplete(jugador=ac_jugador)
     async def adm_xp(inter: discord.Interaction, jugador: str, cantidad: app_commands.Range[int, -10000, 10000],
                      tipo: app_commands.Choice[str] | None = None):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         t = tipo.value if tipo else "levels"
         nombre = tipo.name.lower() if tipo else "niveles"
         await ejecutar(inter, f"experience add {jugador} {cantidad} {t}",
@@ -1304,6 +1333,7 @@ def registrar_comandos(bot: CobbleBot):
                 for b in (await bot.datos_cobblemon()).balls if a in b][:25]
 
     async def regalar(inter: discord.Interaction, jugador: str, comando: str, que: str):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         """Comprueba permisos, lanza el comando por RCON, responde y lo deja registrado."""
         if not bot.puede_regalar(inter.user):
             await inter.response.send_message("No tienes permiso para dar cosas a los jugadores.", ephemeral=True)
@@ -1375,6 +1405,7 @@ def registrar_comandos(bot: CobbleBot):
                           dinamax: app_commands.Range[int, 0, 10] | None = None, gigamax: bool | None = None,
                           tamano: app_commands.Range[float, 0.1, 5.0] | None = None,
                           intercambiable: bool | None = None, extra: str | None = None):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         async def error(msg: str):
             await inter.response.send_message(f"❌ {msg}", ephemeral=True)
 
@@ -1466,6 +1497,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.autocomplete(jugador=ac_jugador)
     async def dar_dinero(inter: discord.Interaction, jugador: str,
                          cantidad: app_commands.Range[int, 1, 1_000_000]):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         await regalar(inter, jugador, f"cobbledollars give {jugador} {cantidad}", f"**{bot.fmt_dinero(cantidad)}**")
 
     @dar.command(name="objeto", description="Da objetos a un jugador conectado: elige el mod, luego el objeto")
@@ -1476,6 +1508,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.autocomplete(jugador=ac_jugador, mod=ac_mod, objeto=ac_objeto)
     async def dar_objeto(inter: discord.Interaction, jugador: str, mod: str, objeto: str,
                          cantidad: app_commands.Range[int, 1, 2304] = 1):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         objeto = objeto.strip().lower()
         if ":" not in objeto:
             objeto = f"{mod.strip().lower()}:{objeto}"
@@ -1513,6 +1546,7 @@ def registrar_comandos(bot: CobbleBot):
     @app_commands.default_permissions(manage_guild=True)
     @app_commands.guild_only()
     async def diagnostico(inter: discord.Interaction, jugador: str):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         if not bot.es_admin(inter.user):
             await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
             return
@@ -1652,11 +1686,12 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
     @app_commands.describe(jugador="Tu nombre en Minecraft")
     @app_commands.autocomplete(jugador=ac_jugador)
     async def team_vincular(inter: discord.Interaction, jugador: str):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         if not RE_NOMBRE_MC.match(jugador):
             await inter.response.send_message("Ese nombre de jugador no es válido.", ephemeral=True)
             return
         await inter.response.defer(ephemeral=True)
-        _, _, conectados = parsear_list(await bot.rcon.comando("list"))
+        _, _, conectados = parsear_list(await bot.rcon.comando(CMD_LIST))
         nombre = next((n for n in conectados if n.lower() == jugador.lower()), None)
         if not nombre:
             await inter.followup.send(f"**{esc(jugador)}** no está conectado. Entra al servidor y vuelve a probar: "
@@ -2026,6 +2061,7 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
     @app_commands.describe(usuario="Usuario de Discord", jugador="Jugador de Minecraft")
     @app_commands.autocomplete(jugador=ac_jugador)
     async def adm_vincular(inter: discord.Interaction, usuario: discord.Member, jugador: str):
+        jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         if not bot.es_admin(inter.user):
             await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
             return
