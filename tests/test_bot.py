@@ -14,7 +14,7 @@ from bot.archivos import ArchivosLocales
 from bot.main import CobbleBot, embed_equipo, embed_medallas, embed_perfil, parsear_list
 from bot.perfiles import Perfiles, dinero_de_estructura, extraer_pokemon
 from bot.rcon import RconClient, RconError
-from bot.teams import Registro, cargar_teams, comandos_crear, parsear_miembros
+from bot.teams import cargar_teams, comandos_crear, parsear_miembros
 
 PASS = "secreta"
 ANA = "11111111-1111-1111-1111-111111111111"
@@ -169,9 +169,9 @@ async def main():
         assert bot.comando_permitido("/whitelist add Pepe") and not bot.comando_permitido("stop")
         print("Embeds y diagnóstico OK")
 
-        # --- Teams: config, comandos de Minecraft, miembros y registro de vínculos
+        # --- Teams: config, comandos de Minecraft y lectura de miembros
         teams = cargar_teams({"teams": [
-            {"id": "rojo", "nombre": "Equipo Rojo", "rol": "Equipo Rojo", "color": "red", "prefijo": "[R] "},
+            {"id": "rojo", "nombre": "Equipo Rojo", "color": "red", "prefijo": "[R] "},
             {"id": "mal id!", "rol": "x"},          # id no válido: se ignora
         ]})
         assert list(teams) == ["rojo"]
@@ -179,15 +179,6 @@ async def main():
         assert cmds[0] == 'team add rojo {"text": "Equipo Rojo", "color": "red"}' and "friendlyFire false" in cmds[4]
         assert parsear_miembros("Team [Equipo Rojo] has 2 member(s): Ana, Luis") == ["Ana", "Luis"]
         assert parsear_miembros("There are no members on team [Equipo Rojo]") == []
-        reg = Registro(Path(tmp) / "datos")
-        reg.vincular(1, "Ana", ANA)
-        reg.poner_team(1, "rojo")
-        codigo = reg.nuevo_codigo(2, "Luis")
-        assert reg.comprobar_codigo(2, "x") is None and reg.comprobar_codigo(2, codigo) == "Luis"
-        assert reg.comprobar_codigo(2, codigo) is None           # un código solo vale una vez
-        reg.vincular(2, "ana")                                    # la cuenta pasa a otro usuario de Discord
-        assert reg.jugador_de(1) is None and reg.team_de(1) is None and reg.jugador_de(2) == "ana"
-        assert Registro(Path(tmp) / "datos").vinculos == reg.vinculos   # se guarda en disco
         print("Teams OK")
 
     srv.close()

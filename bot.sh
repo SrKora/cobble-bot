@@ -28,7 +28,6 @@ dc() {
 comprobar() {
   [ -f .env ] || { echo "Falta .env: copia .env.ejemplo a .env y rellénalo"; exit 1; }
   [ -f config.toml ] || { echo "Falta config.toml: copia config.ejemplo.toml a config.toml"; exit 1; }
-  mkdir -p datos   # datos propios del bot (vínculos y teams); si la crea Docker, sería de root
 }
 
 case "${1:-ayuda}" in
