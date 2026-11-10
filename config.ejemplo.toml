@@ -108,7 +108,8 @@ huevos = "cobblemon:hatched"
 
 # --- Teams ---
 # Equipos de Minecraft: en el chat, la lista de jugadores y encima de la cabeza sale [Etiqueta] Jugador
-# sincronizados con roles de Discord. Un bloque [[teams]] por equipo; sin bloques no hay /team.
+# sincronizados con roles de Discord. Lo normal es crearlos desde Discord con /admin team-crear;
+# aquí solo si los quieres fijos (un bloque [[teams]] por equipo).
 #   id          = nombre del team dentro de Minecraft (minúsculas, sin espacios)
 #   nombre      = nombre que se ve
 #   rol         = nombre EXACTO del rol de Discord (o su ID)

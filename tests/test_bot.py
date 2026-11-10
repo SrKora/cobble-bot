@@ -14,7 +14,7 @@ from bot.archivos import ArchivosLocales
 from bot.main import CobbleBot, embed_equipo, embed_medallas, embed_perfil, parsear_list
 from bot.perfiles import Perfiles, dinero_de_estructura, extraer_pokemon
 from bot.rcon import RconClient, RconError
-from bot.teams import Registro, cargar_teams, comandos_crear, parsear_miembros
+from bot.teams import Registro, Team, cargar_teams, comandos_crear, id_para, parsear_miembros
 
 PASS = "secreta"
 ANA = "11111111-1111-1111-1111-111111111111"
@@ -195,6 +195,15 @@ async def main():
         reg.vincular(2, "ana")                                    # la cuenta pasa a otro usuario de Discord
         assert reg.jugador_de(1) is None and reg.team_de(1) is None and reg.jugador_de(2) == "ana"
         assert Registro(Path(tmp) / "datos").vinculos == reg.vinculos   # se guarda en disco
+        # Teams creados desde Discord: se guardan en la carpeta del bot y se borran con sus miembros
+        assert id_para("Los Dragones Ñ!", {}) == "los_dragones_n" and id_para("Rojo", {"rojo": 1}) == "rojo_2"
+        reg.guardar_team(Team("dragones", "Los Dragones", "123", "red", "DRG", rol_creado=True))
+        reg.poner_team(2, "dragones")
+        otro = Registro(Path(tmp) / "datos")
+        assert otro.teams["dragones"].etiqueta == "DRG" and otro.teams["dragones"].desde_discord
+        assert otro.teams["dragones"].rol_creado and otro.team_de(2) == "dragones"
+        assert otro.borrar_team("dragones") == ["2"] and otro.team_de(2) is None
+        assert "dragones" not in Registro(Path(tmp) / "datos").teams
         print("Teams OK")
 
     srv.close()

@@ -71,7 +71,7 @@ En Discord: **Ajustes de usuario → Avanzado → Modo desarrollador** (actíval
 | ID de un **canal de estado** | Clic derecho en el canal | `DISCORD_CANAL_ESTADO`: avisos de servidor caído / reiniciando / online |
 | ID de un **canal de registro** (privado) | Clic derecho en el canal | `DISCORD_CANAL_REGISTRO`: queda apuntado quién usa `/dar`, `/admin` y `/comando` |
 | ID de los **roles** de admin y de regalos | Ajustes del servidor → Roles → clic derecho | `DISCORD_ROLES_ADMIN`, `DISCORD_ROLES_REGALOS` |
-| **Roles de los teams** (opcional) | Créalos en Ajustes del servidor → Roles | En `config.toml`, sección `[[teams]]` (por nombre exacto o ID) |
+| **Roles de los teams** (opcional) | Los crea el bot con `/admin team-crear`, o elige uno que ya exista | Nada: se elige en el propio comando |
 
 **Canales recomendados:**
 - `#estado-del-servidor`: público, de solo lectura para los miembros. Ahí avisa el bot.
@@ -218,7 +218,7 @@ Al escribir un **jugador** salen sugerencias; los conectados aparecen arriba con
 | `/estado` | Si el servidor está online y cuánta gente hay |
 | `/jugadores` | Quién está conectado |
 
-### Teams (si hay teams en `config.toml`)
+### Teams
 
 | Comando | Qué hace |
 |---|---|
@@ -268,6 +268,9 @@ Al unirte, el bot te pone el **rol de Discord** del team y te mete en el **team 
 | `/admin guardar` | Guarda el mundo |
 | `/admin reiniciar [aviso]` | Avisa a los jugadores (chat y título en pantalla), espera y reinicia. **Pide confirmación con un botón.** Requiere que algo vuelva a arrancar el servidor al pararse (en Docker: `restart: unless-stopped`) |
 | `/admin mensaje` | Mensajes en el juego (ver abajo) |
+| `/admin team-crear nombre [color] [etiqueta] [rol] [emoji] [fuego_amigo]` | Crea un team con el **nombre que quieras**. Si no eliges `rol`, el bot crea un rol de Discord con ese nombre y color. En el chat sale `[Etiqueta] Jugador` |
+| `/admin team-editar team …` | Cambia el nombre, color, etiqueta, rol, emoji o fuego amigo |
+| `/admin team-borrar team` | Borra el team (pide confirmación). Si el rol lo creó el bot, también lo borra |
 | `/admin team usuario team` | Pone, cambia o quita (`Sin team`) el team de alguien, en Discord y en Minecraft |
 | `/admin vincular usuario jugador` · `/admin desvincular usuario` | Vincular a mano (sin código) o deshacer un vínculo |
 | `/comando texto` | Cualquier comando de la lista `permitidos` de `config.toml`, con sugerencias |
@@ -306,13 +309,13 @@ Si una variable está en el `.env`, manda sobre `config.toml`. Tras cambiar cual
 | `[comandos]` | Comandos permitidos en `/comando` (no pongas `"*"`) |
 | `[cobbleverse]` | Símbolo y carpeta del dinero, y qué logros cuentan como medallas y ligas |
 | `[rankings_cobblemon]` | Rankings extra de `/top` a partir de estadísticas de Cobblemon |
-| `[[teams]]` | Un bloque por team: id en Minecraft, nombre, rol de Discord, color, etiqueta (lo que sale entre `[]`), emoji y fuego amigo. Sin bloques, no hay `/team` |
+| `[[teams]]` | Un bloque por team: id en Minecraft, nombre, rol de Discord, color, etiqueta (lo que sale entre `[]`), emoji y fuego amigo. **Opcional**: lo normal es crearlos con `/admin team-crear` |
 
 ### Cómo funcionan los teams
 
 - **Manda Discord.** Si un admin pone o quita a mano el rol de un team en Discord, el bot lo copia a Minecraft (lo comprueba cada 5 minutos). Si alguien cambia de team **dentro del juego** con `/team`, el bot lo deshace. Los jugadores sin vincular no se tocan.
 - Los teams de Minecraft los crea el propio bot con comandos (`/team add`, colores, `[etiqueta]`…) al arrancar y cada vez que el servidor vuelve a estar en pie. Se guardan en el mundo como cualquier team.
-- Lo que el bot recuerda (quién es quién y en qué team está) va en su carpeta **`datos/`** (`datos/teams.json`), **no** en el servidor. Es la única carpeta en la que escribe. Contiene IDs de Discord y nombres de jugadores: no la compartas (está en `.gitignore`).
+- Lo que el bot recuerda (los teams creados desde Discord, quién es quién y en qué team está) va en su carpeta **`datos/`** (`datos/teams.json`), **no** en el servidor. Es la única carpeta en la que escribe. Contiene IDs de Discord y nombres de jugadores: no la compartas (está en `.gitignore`).
 - Si el bot no tiene permiso para gestionar roles, el jugador entra igualmente en el team de Minecraft y el rol de Discord se pone solo en cuanto se arreglen los permisos.
 
 ---

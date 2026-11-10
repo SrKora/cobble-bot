@@ -1,12 +1,14 @@
 """Teams: equipos de Minecraft (scoreboard teams, por RCON) sincronizados con roles de Discord.
 
-- Cada team se define en config.toml ([[teams]]): id del team en Minecraft, nombre, rol de Discord, color…
+- Los teams los crea un admin desde Discord (/admin team-crear): nombre, color, [etiqueta] y rol de Discord
+  (uno que ya exista o uno nuevo que crea el bot). También se pueden definir en config.toml ([[teams]]).
 - Cada jugador vincula su cuenta de Discord con la de Minecraft (/team vincular → código en el chat del juego).
 - La primera vez cada uno elige su team (/team unirse); para cambiarse tiene que hacerlo un admin.
 - Manda Discord: si un admin pone o quita el rol de un team a mano, el bot lo copia a Minecraft.
 
 El bot NO escribe en los archivos del servidor: los teams de Minecraft se crean y cambian con comandos
-(/team …) y lo que el bot necesita recordar (vínculos y teams) va en su propia carpeta de datos.
+(/team …) y lo que el bot necesita recordar (teams creados, vínculos y team de cada uno) va en su propia
+carpeta de datos (datos/teams.json).
 """
 import asyncio
 import json
@@ -14,11 +16,19 @@ import os
 import random
 import re
 import time
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 RE_ID_TEAM = re.compile(r"^[a-z0-9_.+-]{1,16}$")
 CODIGO_SEGUNDOS = 300
+# Colores de Minecraft en hexadecimal (para el color del rol de Discord)
+HEX_COLORES = {
+    "black": 0x000000, "dark_blue": 0x0000AA, "dark_green": 0x00AA00, "dark_aqua": 0x00AAAA,
+    "dark_red": 0xAA0000, "dark_purple": 0xAA00AA, "gold": 0xFFAA00, "gray": 0xAAAAAA, "dark_gray": 0x555555,
+    "blue": 0x5555FF, "green": 0x55FF55, "aqua": 0x55FFFF, "red": 0xFF5555, "light_purple": 0xFF55FF,
+    "yellow": 0xFFFF55, "white": 0xFFFFFF,
+}
 
 
 @dataclass
@@ -30,6 +40,8 @@ class Team:
     etiqueta: str = ""   # sale como [Etiqueta] delante del jugador (chat, lista de jugadores, encima de la cabeza)
     fuego_amigo: bool = False
     emoji: str = ""
+    desde_discord: bool = False   # creado con /admin team-crear (se puede editar y borrar desde Discord)
+    rol_creado: bool = False      # el rol de Discord lo creó el bot (al borrar el team, se borra también)
 
     @property
     def titulo(self) -> str:
@@ -49,6 +61,16 @@ def prefijo_json(etiqueta: str, color: str) -> str:
     Minecraft lo pone delante del nombre del jugador en el chat, en la lista de jugadores y encima de su cabeza."""
     return json.dumps({"text": "[", "color": "gray", "extra": [
         {"text": etiqueta_de(etiqueta), "color": color}, {"text": "] ", "color": "gray"}]}, ensure_ascii=False)
+
+
+def id_para(nombre: str, existentes) -> str:
+    """'Los Dragones Ñ' -> 'los_dragones_n' (válido para Minecraft y que no esté ya cogido)."""
+    t = unicodedata.normalize("NFKD", nombre).encode("ascii", "ignore").decode().lower()
+    base = re.sub(r"[^a-z0-9]+", "_", t).strip("_")[:14] or "team"
+    tid, n = base, 2
+    while tid in existentes:
+        tid, n = f"{base[:13]}_{n}", n + 1
+    return tid
 
 
 def cargar_teams(cfg: dict) -> dict[str, Team]:
@@ -93,19 +115,25 @@ class Registro:
         self.equipos: dict[str, str] = {}       # discord_id -> id del team
         # Usuarios cuyo rol de Discord no se pudo poner/quitar (faltaban permisos): se reintenta al sincronizar
         self.pendientes: set[str] = set()
+        self.teams: dict[str, Team] = {}        # teams creados desde Discord (id -> Team)
         self._codigos: dict[str, tuple[str, str, float]] = {}   # discord_id -> (código, jugador, caduca)
         self.lock = asyncio.Lock()
         try:
             d = json.loads(self.ruta.read_text(encoding="utf-8"))
             self.vinculos, self.equipos = d.get("vinculos", {}), d.get("equipos", {})
             self.pendientes = set(d.get("roles_pendientes", []))
+            campos = {f.name for f in fields(Team)}
+            for tid, t in (d.get("teams") or {}).items():
+                if RE_ID_TEAM.match(tid):
+                    self.teams[tid] = Team(**{k: v for k, v in t.items() if k in campos} | {"id": tid})
         except (OSError, ValueError):
             pass
 
     def guardar(self):
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.ruta.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"vinculos": self.vinculos, "equipos": self.equipos,
+        tmp.write_text(json.dumps({"teams": {tid: asdict(t) for tid, t in self.teams.items()},
+                                   "vinculos": self.vinculos, "equipos": self.equipos,
                                    "roles_pendientes": sorted(self.pendientes)}, indent=2,
                                   ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, self.ruta)
@@ -144,7 +172,23 @@ class Registro:
         self.guardar()
         return v["nombre"] if v else None
 
-    # ---- teams
+    # ---- teams creados desde Discord
+    def guardar_team(self, t: Team):
+        t.desde_discord = True
+        self.teams[t.id] = t
+        self.guardar()
+
+    def borrar_team(self, tid: str) -> list[str]:
+        """Quita el team y deja sin team a sus miembros. Devuelve los discord_id que estaban en él."""
+        self.teams.pop(tid, None)
+        estaban = [d for d, t in self.equipos.items() if t == tid]
+        for d in estaban:
+            self.equipos.pop(d, None)
+            self.pendientes.discard(d)
+        self.guardar()
+        return estaban
+
+    # ---- team de cada uno
     def team_de(self, discord_id: int) -> str | None:
         return self.equipos.get(str(discord_id))
 
