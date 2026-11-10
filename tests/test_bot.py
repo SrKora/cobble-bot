@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from bot import nbt
 from bot.archivos import ArchivosLocales
-from bot.main import CobbleBot, embed_equipo, embed_medallas, embed_perfil, parsear_list
+from bot.main import CobbleBot, embed_equipo, embed_medallas, embed_perfil, nombre_jugador, parsear_list
 from bot.perfiles import Perfiles, dinero_de_estructura, extraer_pokemon
 from bot.rcon import RconClient, RconError
 from bot.teams import (comandos_crear, comandos_editar, etiqueta_de, id_para, leer_scoreboard, parsear_miembros,
@@ -41,7 +41,8 @@ async def servidor_rcon_falso(reader, writer):
         return
     enviar(rid, 2, "")
     rid, _, cmd = await leer()
-    enviar(rid, 0, "There are 2 of a max of 20 players online: §aAna, Luis" if cmd == "list" else f"ok: {cmd}")
+    enviar(rid, 0, "There are 2 of a max of 20 players online: §aAna, Luis" if cmd in ("list", "list uuids")
+             else f"ok: {cmd}")
     await writer.drain()
     writer.close()
 
@@ -107,6 +108,9 @@ async def main():
     # --- RCON
     r = RconClient("127.0.0.1", puerto, PASS)
     assert parsear_list(await r.comando("list")) == (2, 20, ["Ana", "Luis"])
+    # Los nombres salen a secas aunque el servidor les ponga la [etiqueta] del team o el uuid
+    assert parsear_list("There are 2 of a max of 10 players online: [MVP] Ash_K, §7[WGA] §fAna (00000000-0000-0000-0000-000000000001)")         == (2, 10, ["Ash_K", "Ana"])
+    assert [nombre_jugador(t) for t in ("🟢 Ash_K (conectado)", "[Los Dragones] Pepe_1", "Luis", "@a")]         == ["Ash_K", "Pepe_1", "Luis", "@a"]
     assert await r.comando("/say hola") == "ok: say hola"
     try:
         await RconClient("127.0.0.1", puerto, "mala").comando("list")
