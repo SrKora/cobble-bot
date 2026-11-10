@@ -1,0 +1,4 @@
+# Saltos de línea de Linux en el repo (los scripts .sh fallan con los de Windows)
+* text=auto eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf

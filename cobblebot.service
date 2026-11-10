@@ -1,0 +1,17 @@
+# Servicio de systemd para que el bot arranque solo y se reinicie si se cae.
+# Ajusta User y las rutas, cópialo a /etc/systemd/system/ y actívalo (ver README).
+[Unit]
+Description=Bot de Discord del servidor Cobblemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=minecraft
+WorkingDirectory=/home/minecraft/cobble-bot
+ExecStart=/home/minecraft/cobble-bot/venv/bin/python run.py config.toml
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+# CobbleBOT en Docker, separado del servidor de Minecraft.
+# Se une a la red de Docker del servidor para hablar con él por RCON y lee los archivos
+# del mundo en SOLO LECTURA. Todo lo que es de esta instalación (claves, rutas) sale del .env.
+# Se maneja con ./bot.sh (mira ./bot.sh ayuda).
+
+name: cobble-bot
+
+services:
+  bot:
+    build: .
+    image: cobble-bot
+    container_name: cobble-bot
+    user: "${UID_GID:-1000:1000}"     # tu usuario, para poder leer los archivos del servidor
+    env_file: .env
+    environment:
+      MC_CARPETA_SERVIDOR: /data      # dentro del contenedor el servidor siempre está en /data
+    volumes:
+      - ${MC_DATOS:?Falta MC_DATOS en el .env (carpeta data del servidor)}:/data:ro
+      - ./config.toml:/config/config.toml:ro
+    networks:
+      - servidor
+    restart: unless-stopped
+
+networks:
+  servidor:
+    external: true
+    name: ${RED_SERVIDOR:-cobbleverse_default}

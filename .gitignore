@@ -1,0 +1,19 @@
+# --- Claves y datos de cada instalación: NUNCA al repositorio ---
+.env
+.env.*
+!.env.ejemplo
+config.toml
+*.bak
+
+# Archivos del servidor de Minecraft (van aparte, no son del bot)
+servidor/
+data/
+backups/
+
+# Python / editor
+venv/
+.venv/
+__pycache__/
+*.pyc
+.vscode/
+*.log

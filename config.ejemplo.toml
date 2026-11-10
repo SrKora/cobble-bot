@@ -1,0 +1,107 @@
+# Configuración del bot de Cobblemon.
+# Copia este archivo como config.toml.
+#
+# Las CLAVES y los datos de cada instalación NO van aquí, van en el archivo .env
+# (copia .env.ejemplo como .env). Este archivo se puede compartir sin peligro.
+#
+#   DISCORD_TOKEN, DISCORD_GUILD_ID, DISCORD_CANAL_AVISOS, DISCORD_CANAL_REGISTRO,
+#   DISCORD_ROLES_ADMIN, RCON_HOST, RCON_PORT, RCON_PASSWORD,
+#   MC_CARPETA_SERVIDOR, MC_CARPETA_MUNDO, ACTUALIZAR_MINUTOS, MONITOR_SEGUNDOS
+#
+# Si una variable del .env está definida, manda sobre lo que ponga aquí.
+
+[discord]
+# Todo en .env (token, servidor de Discord, canales y roles admin)
+
+[rcon]
+# Valores por defecto; la contraseña va en .env (RCON_PASSWORD)
+host = "127.0.0.1"
+puerto = 25575
+
+[archivos]
+# "local" = el bot lee los archivos del servidor directamente.
+# La carpeta del servidor y la del mundo van en .env (MC_CARPETA_SERVIDOR, MC_CARPETA_MUNDO)
+modo = "local"
+carpeta_mundo = "world"
+# Cada cuántos segundos se vuelven a leer las estadísticas como máximo
+cache_segundos = 300
+# Cada cuántos minutos el bot guarda el mundo (save-all) y recarga los datos solo.
+# Si no hay nadie conectado se salta. 0 = desactivado (solo con /actualizar)
+actualizar_minutos = 5
+
+[monitor]
+# Cada cuántos segundos se comprueba quién está conectado
+intervalo_segundos = 30
+# Avisar en el canal de avisos de quién entra y sale del servidor.
+# Los avisos de servidor caído / reiniciando / online salen siempre.
+avisar_entradas = false
+
+[mensajes]
+# Cómo firma el bot los mensajes dentro del juego (anuncios, mensajes privados, aviso de reinicio).
+# Sale así en el chat:  [CobbleBOT] Hola a todos
+nombre = "CobbleBOT"
+# Color del nombre: black, dark_blue, dark_green, dark_aqua, dark_red, dark_purple, gold, gray,
+# dark_gray, blue, green, aqua, red, light_purple, yellow, white
+color = "gold"
+
+[comandos]
+# Primeras palabras de los comandos que se pueden lanzar con /comando.
+# Pon ["*"] para permitir cualquier comando (no recomendado).
+permitidos = [
+  "list", "say", "tellraw", "msg", "whitelist", "kick", "ban", "pardon", "banlist",
+  "op", "deop", "gamemode", "tp", "give", "pokegiveother", "pokeheal", "cobbledollars",
+  "experience", "effect", "time", "weather", "difficulty", "gamerule", "save-all",
+]
+
+[cobbleverse]
+# Símbolo del dinero de CobbleDollars
+simbolo_dinero = "₽"
+# Carpeta (dentro del mundo) donde CobbleDollars guarda el dinero de cada jugador
+carpeta_dinero = "cobbledollarsplayerdata"
+
+# --- Medallas y ligas ---
+# COBBLEVERSE registra las medallas y las ligas como logros (advancements).
+# El bot detecta solo los logros cuyo ID contiene estas palabras.
+# Usa /diagnostico con tu jugador para ver los IDs reales y afinar esto.
+palabras_medalla = ["badge", "medalla"]
+palabras_liga = ["champion", "trophy", "campeon"]
+# Namespaces de logros a tener en cuenta ([] = todos menos los de Minecraft vanilla)
+espacios = []
+# Partes de ID que se ignoran siempre
+excluir = ["recipes/", "/root"]
+# IDs exactos de los logros que cuentan (si estas listas tienen algo, se ignoran las palabras de arriba).
+# COBBLEVERSE da un logro "cobbleverse:trainer/<region>/defeat_<lider>" al vencer a cada líder
+# de gimnasio (= medalla) y "defeat_champion_<nombre>" al vencer al campeón (= liga).
+# Comprobado con COBBLEVERSE 1.7.42 (Kanto, Johto, Hoenn y Sinnoh).
+ids_medallas = [
+  # Kanto
+  "cobbleverse:trainer/kanto/defeat_brock", "cobbleverse:trainer/kanto/defeat_misty", "cobbleverse:trainer/kanto/defeat_ltsurge", "cobbleverse:trainer/kanto/defeat_erika",
+  "cobbleverse:trainer/kanto/defeat_koga", "cobbleverse:trainer/kanto/defeat_sabrina", "cobbleverse:trainer/kanto/defeat_blaine", "cobbleverse:trainer/kanto/defeat_giovanni",
+  # Johto
+  "cobbleverse:trainer/johto/defeat_valerio", "cobbleverse:trainer/johto/defeat_chiara", "cobbleverse:trainer/johto/defeat_angelo", "cobbleverse:trainer/johto/defeat_furio",
+  "cobbleverse:trainer/johto/defeat_jasmine", "cobbleverse:trainer/johto/defeat_alfredo", "cobbleverse:trainer/johto/defeat_raffaello", "cobbleverse:trainer/johto/defeat_sandra",
+  # Hoenn
+  "cobbleverse:trainer/hoenn/defeat_petra", "cobbleverse:trainer/hoenn/defeat_rudi", "cobbleverse:trainer/hoenn/defeat_walter", "cobbleverse:trainer/hoenn/defeat_fiammetta",
+  "cobbleverse:trainer/hoenn/defeat_norman", "cobbleverse:trainer/hoenn/defeat_alice", "cobbleverse:trainer/hoenn/defeat_tell", "cobbleverse:trainer/hoenn/defeat_adriano",
+  # Sinnoh
+  "cobbleverse:trainer/sinnoh/defeat_pedro", "cobbleverse:trainer/sinnoh/defeat_gardenia", "cobbleverse:trainer/sinnoh/defeat_marzia", "cobbleverse:trainer/sinnoh/defeat_omar",
+  "cobbleverse:trainer/sinnoh/defeat_fannie", "cobbleverse:trainer/sinnoh/defeat_ferruccio", "cobbleverse:trainer/sinnoh/defeat_bianca", "cobbleverse:trainer/sinnoh/defeat_corrado",
+]
+ids_ligas = [
+  "cobbleverse:trainer/kanto/defeat_champion_blue",
+  "cobbleverse:trainer/johto/defeat_champion_lance",
+  "cobbleverse:trainer/hoenn/defeat_champion_rocco",
+  "cobbleverse:trainer/sinnoh/defeat_champion_camilla",
+]
+
+[rankings_cobblemon]
+# Ya vienen de serie en /top: horas, dinero, medallas, ligas, pokemon, shinies,
+# especies, nivel_max, logros, muertes, distancia y mobs.
+# Rankings extra de Cobblemon para /top: nombre_del_ranking = "clave de la estadística".
+# Si alguna sale vacía, mira las claves reales con /stats de un jugador
+# o en world/stats/<uuid>.json (las que empiezan por "cobblemon:").
+capturas = "cobblemon:captured"
+shinies_capturados = "cobblemon:shinies_captured"
+combates = "cobblemon:battles_won"
+evoluciones = "cobblemon:evolved"
+huevos = "cobblemon:hatched"
