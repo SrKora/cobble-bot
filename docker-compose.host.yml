@@ -1,0 +1,12 @@
+# Para cuando el servidor de Minecraft NO está en Docker (corre directamente en esta máquina).
+# El bot usa la red de la máquina, así que llega a RCON por 127.0.0.1.
+#   docker compose -f docker-compose.yml -f docker-compose.host.yml up -d --build
+# (o pon BOT_SIN_RED_DOCKER=1 en el .env y usa ./bot.sh, que lo hace solo)
+# En el .env: RCON_HOST=127.0.0.1 y MC_DATOS = carpeta del servidor (donde están server.properties y el mundo)
+
+services:
+  bot:
+    network_mode: host
+    networks: !reset {}
+
+networks: !reset {}
