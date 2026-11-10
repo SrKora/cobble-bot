@@ -171,6 +171,13 @@ async def main():
         d = await perf.diagnostico(ANA)
         assert d["rutas_pokemon"]["playerpartystore"].endswith(".dat") and d["n_archivos_dinero"] == 2
         assert bot.comando_permitido("/whitelist add Pepe") and not bot.comando_permitido("stop")
+        # /help dentro de los límites de Discord, con todo a la vista (admin y regalos)
+        from bot.main import embed_ayuda
+        for adm, reg in ((False, False), (True, True)):
+            e = embed_ayuda(bot, adm, reg)
+            assert len(e) <= 6000 and all(len(f.value) <= 1024 for f in e.fields) and len(e.fields) <= 25
+        assert any("Admins" in f.name for f in embed_ayuda(bot, True, True).fields)
+        assert not any("Admins" in f.name or "Regalos" in f.name for f in embed_ayuda(bot, False).fields)
         print("Embeds y diagnóstico OK")
 
         # --- Teams: config, comandos de Minecraft, miembros y registro de vínculos
