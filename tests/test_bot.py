@@ -204,6 +204,9 @@ async def main():
         assert otro.teams["dragones"].rol_creado and otro.team_de(2) == "dragones"
         assert otro.borrar_team("dragones") == ["2"] and otro.team_de(2) is None
         assert "dragones" not in Registro(Path(tmp) / "datos").teams
+        # Un team apuntado que ya no existe (p. ej. borrado a mano) no rompe nada: se queda sin team
+        otro.poner_team(5, "rocket"); otro.marcar_pendiente(5, True)
+        assert otro.limpiar_teams({"rojo": 1}) == ["5"] and otro.team_de(5) is None and "5" not in otro.pendientes
         print("Teams OK")
 
     srv.close()

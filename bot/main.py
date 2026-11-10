@@ -204,6 +204,8 @@ class CobbleBot(discord.Client):
     async def cambiar_team(self, miembro: discord.Member, team: str | None) -> list[str]:
         """Pone (o quita, con None) el team de alguien en Discord, en Minecraft y en el registro."""
         problemas = []
+        if team and team not in self.teams:      # team que ya no existe (borrado): se queda sin team
+            team = None
         roles = self.roles_teams(miembro.guild)
         quitar = [r for tid, r in roles.items() if r and r in miembro.roles and tid != team]
         poner = roles.get(team) if team else None
@@ -239,6 +241,11 @@ class CobbleBot(discord.Client):
         guild = self.get_guild(self.guild_id) if self.guild_id else None
         if not guild or not self.teams:
             return
+        # Quien tenía apuntado un team que ya no existe (borrado) pasa a estar sin team
+        async with self.registro.lock:
+            huerfanos = self.registro.limpiar_teams(self.teams)
+        if huerfanos:
+            log.info("Quitados %d team(s) que ya no existen del registro", len(huerfanos))
         roles = self.roles_teams(guild)
         if not self.puede_gestionar_roles(guild, roles) and any(roles.values()):
             # Solo se copian los roles de Discord si el bot puede gestionarlos (si no, se perderían cambios)
@@ -272,7 +279,11 @@ class CobbleBot(discord.Client):
 
     @tasks.loop(minutes=5)
     async def sincronizar_teams_loop(self):
-        await self.sincronizar_teams()
+        # Un fallo no debe parar la sincronización para siempre: se apunta y se reintenta a los 5 minutos
+        try:
+            await self.sincronizar_teams()
+        except Exception:
+            log.exception("Error sincronizando teams")
 
     @sincronizar_teams_loop.before_loop
     async def _antes_teams(self):

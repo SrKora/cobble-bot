@@ -188,6 +188,16 @@ class Registro:
         self.guardar()
         return estaban
 
+    def limpiar_teams(self, validos) -> list[str]:
+        """Deja sin team a quien tenga apuntado uno que ya no existe. Devuelve esos discord_id."""
+        malos = [d for d, t in self.equipos.items() if t not in validos]
+        for d in malos:
+            self.equipos.pop(d, None)
+            self.pendientes.discard(d)
+        if malos:
+            self.guardar()
+        return malos
+
     # ---- team de cada uno
     def team_de(self, discord_id: int) -> str | None:
         return self.equipos.get(str(discord_id))
