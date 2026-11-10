@@ -408,10 +408,11 @@ class CobbleBot(discord.Client):
         return {i: e.nombre for i, e in (await self.datos_cobblemon()).especies.items()}
 
     def cmd_mensaje(self, texto: str, destino: str = "@a", privado: bool = False, estilo: dict | None = None,
-                    firma: bool = True) -> str:
-        """tellraw firmado con el nombre del bot: '[CobbleBOT] texto'. El texto admite códigos & (colores…)."""
+                    firma: bool = True, extra: list | None = None) -> str:
+        """tellraw firmado con el nombre del bot: '[CobbleBOT] texto'. El texto admite códigos & (colores…).
+        'extra': componentes JSON que se añaden al final tal cual (p. ej. texto en el que se puede hacer clic)."""
         estilo = estilo or {"color": "light_purple" if privado else "white", "italic": privado}
-        cuerpo = componentes(texto, estilo)
+        cuerpo = componentes(texto, estilo) + list(extra or [])
         if firma:
             etiqueta = f"[{self.nombre_juego}{' → tú' if privado else ''}] "
             cuerpo = ["", {"text": etiqueta, "color": self.color_juego, "bold": True}, cuerpo]
@@ -1478,6 +1479,13 @@ def main():
 
 
 # =================================================================== teams
+def componente_copiar(texto: str) -> dict:
+    """Texto del chat de Minecraft que se copia al portapapeles al hacer clic (formato 1.21.5+)."""
+    return {"text": texto, "color": "green", "bold": True, "underlined": True,
+            "click_event": {"action": "copy_to_clipboard", "value": texto},
+            "hover_event": {"action": "show_text", "value": {"text": "Haz clic para copiar", "color": "yellow"}}}
+
+
 def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_commands.Group,
                     ac_jugador, ac_categoria):
     opciones_color = [app_commands.Choice(name=n, value=v) for v, n in COLORES.items()]
@@ -1524,9 +1532,11 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
             return
         codigo = bot.registro.nuevo_codigo(inter.user.id, nombre)
         await bot.rcon.comando(bot.cmd_mensaje(
-            f"&eCódigo para vincular tu Discord (&f{inter.user}&e): &a&l{codigo}&r&7 · caduca en 5 min. "
-            f"Úsalo con /team confirmar en Discord.", nombre, privado=True,
-            estilo={"color": "yellow"}))
+            f"&eCódigo para vincular tu Discord (&f{inter.user}&e): ", nombre, privado=True,
+            estilo={"color": "yellow"}, extra=[
+                componente_copiar(codigo),
+                {"text": " ← haz clic para copiarlo · caduca en 5 min. Pégalo en /team confirmar en Discord.",
+                 "color": "gray"}]))
         await inter.followup.send(f"📨 Te he mandado un código al **chat del juego**. Escríbelo aquí con "
                                   f"`/team confirmar codigo:…` (caduca en 5 minutos).", ephemeral=True)
 
