@@ -1480,10 +1480,10 @@ def main():
 
 # =================================================================== teams
 def componente_copiar(texto: str) -> dict:
-    """Texto del chat de Minecraft que se copia al portapapeles al hacer clic (formato 1.21.5+)."""
+    """Texto del chat de Minecraft que se copia al portapapeles al hacer clic (formato JSON de 1.21.1)."""
     return {"text": texto, "color": "green", "bold": True, "underlined": True,
-            "click_event": {"action": "copy_to_clipboard", "value": texto},
-            "hover_event": {"action": "show_text", "value": {"text": "Haz clic para copiar", "color": "yellow"}}}
+            "clickEvent": {"action": "copy_to_clipboard", "value": texto},
+            "hoverEvent": {"action": "show_text", "contents": {"text": "Haz clic para copiar", "color": "yellow"}}}
 
 
 def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_commands.Group,
