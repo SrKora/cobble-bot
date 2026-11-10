@@ -254,7 +254,9 @@ class CobbleBot(discord.Client):
             # Solo se copian los roles de Discord si el bot puede gestionarlos (si no, se perderían cambios)
             for did in list(self.registro.vinculos):
                 try:
-                    m = guild.get_member(int(did)) or await guild.fetch_member(int(did))
+                    # Siempre desde Discord: sin el intent de miembros, la caché no se entera de los roles
+                    # que se acaban de poner y parecería que no tiene ninguno (y se le sacaría del team)
+                    m = await guild.fetch_member(int(did))
                 except discord.HTTPException:
                     continue
                 if did in self.registro.pendientes:
@@ -562,13 +564,20 @@ class CobbleBot(discord.Client):
         return len(perfiles)
 
     # ---------------------------------------------------------------- ligas
+    async def miembro_fresco(self, guild: discord.Guild, discord_id) -> discord.Member | None:
+        """El miembro pedido a Discord en el momento (con sus roles al día), o None si ya no está."""
+        try:
+            return await guild.fetch_member(int(discord_id))
+        except discord.HTTPException:
+            return None
+
     async def miembro_de_jugador(self, guild: discord.Guild, jugador: str) -> discord.Member | None:
         """Usuario de Discord vinculado con ese jugador (con /team vincular), si lo hay."""
         did = self.registro.discord_de(jugador)
         if not did:
             return None
         try:
-            return guild.get_member(int(did)) or await guild.fetch_member(int(did))
+            return await guild.fetch_member(int(did))      # roles al día (la caché puede estar desfasada)
         except discord.HTTPException:
             return None
 
@@ -1924,7 +1933,7 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
             t.rol, t.rol_creado = str(rol.id), False
             for did, tid in list(bot.registro.equipos.items()):
                 if tid == t.id:
-                    m = inter.guild.get_member(int(did))
+                    m = await bot.miembro_fresco(inter.guild, did)
                     if m and rol_antes and rol_antes in m.roles:
                         try:
                             await m.remove_roles(rol_antes, reason="CobbleBOT: el team cambió de rol")
@@ -1978,7 +1987,7 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
                         await rol.delete(reason=f"CobbleBOT: team borrado por {i.user}")
                     else:
                         for did in estaban:
-                            m = i.guild.get_member(int(did))
+                            m = await bot.miembro_fresco(i.guild, did)
                             if m and rol in m.roles:
                                 await m.remove_roles(rol, reason=f"CobbleBOT: team borrado por {i.user}")
                 except discord.HTTPException:
