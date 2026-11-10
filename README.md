@@ -130,6 +130,7 @@ Lo mínimo que hay que rellenar en el `.env` (todas las opciones están explicad
 | `DISCORD_TOKEN` | El token del [paso 2.1](#21-la-aplicación-y-el-token) |
 | `DISCORD_GUILD_ID` | ID de tu servidor de Discord |
 | `DISCORD_CANAL_ESTADO` | ID del canal de avisos de estado (0 = sin avisos) |
+| `DISCORD_RESPUESTAS_PUBLICAS` | `true` (por defecto): las respuestas de los comandos las ve todo el canal, así queda registro de lo que se hace. Los errores y `/help` solo los ve quien usa el comando. `false`: todo privado |
 | `DISCORD_ROLES_ADMIN` / `DISCORD_ROLES_REGALOS` | IDs de roles separados por comas (los administradores de Discord siempre pueden) |
 | `RCON_PASSWORD` | La misma `rcon.password` del servidor |
 | `MC_CARPETA_MUNDO` | El `level-name` (normalmente `world`) |

@@ -16,6 +16,7 @@ VARIABLES: dict[str, tuple[str, str, str]] = {
     "DISCORD_CANAL_AVISOS":   ("discord", "canal_avisos", "int"),
     "DISCORD_CANAL_REGISTRO": ("discord", "canal_registro", "int"),
     "DISCORD_CANAL_ESTADO":   ("discord", "canal_estado", "int"),
+    "DISCORD_RESPUESTAS_PUBLICAS": ("discord", "respuestas_publicas", "bool"),
     "DISCORD_ROLES_ADMIN":    ("discord", "roles_admin", "lista_int"),
     "DISCORD_ROLES_REGALOS":  ("discord", "roles_regalos", "lista_int"),
     "RCON_HOST":              ("rcon", "host", "str"),

@@ -127,6 +127,9 @@ class CobbleBot(discord.Client):
         self.canal_registro = int(d["canal_registro"]) if d.get("canal_registro") else None
         # Canal para "servidor caído / vuelve a estar online / reiniciando" (si no, el de avisos)
         self.canal_estado = int(d["canal_estado"]) if d.get("canal_estado") else self.canal_avisos
+        # Respuestas de los comandos visibles para todo el canal (registro de lo que se ejecuta). Los errores,
+        # los "no tienes permiso" y /help siguen saliendo solo para quien usa el comando.
+        self.privado = not bool(d.get("respuestas_publicas", True))
         self.roles_admin = {int(x) for x in d.get("roles_admin", [])}
         # Roles que pueden usar /dar (Pokémon, dinero, objetos). Los admins siempre pueden.
         self.roles_regalos = {int(x) for x in d.get("roles_regalos", [])}
@@ -777,14 +780,14 @@ def registrar_comandos(bot: CobbleBot):
         if not bot.comando_permitido(comando):
             await inter.response.send_message(
                 f"Ese comando no está en la lista de permitidos.\nPermitidos: `{', '.join(bot.permitidos) or '(ninguno)'}`",
-                ephemeral=True)
+                ephemeral=bot.privado)
             return
-        await inter.response.defer(ephemeral=True)
+        await inter.response.defer(ephemeral=bot.privado)
         try:
             salida, ok = limpiar(await bot.rcon.comando(comando)) or "(sin respuesta)", True
         except RconError as e:
             salida, ok = str(e), False
-        await inter.followup.send(f"`/{comando.lstrip('/')}`\n```\n{salida[:1800]}\n```", ephemeral=True)
+        await inter.followup.send(f"`/{comando.lstrip('/')}`\n```\n{salida[:1800]}\n```", ephemeral=bot.privado)
         await bot.enviar(bot.canal_registro, embed=discord.Embed(
             description=f"**{inter.user}** ejecutó `/{comando.lstrip('/')}`" + ("" if ok else f"\n❌ {salida[:500]}"),
             color=0x555555, timestamp=datetime.now(timezone.utc)))
@@ -810,16 +813,16 @@ def registrar_comandos(bot: CobbleBot):
         try:
             salida = limpiar(await bot.rcon.comando(comando))
         except RconError as e:
-            await inter.followup.send(f"No pude contactar con el servidor: {e}", ephemeral=True)
+            await inter.followup.send(f"No pude contactar con el servidor: {e}", ephemeral=bot.privado)
             return None
         bajo = salida.lower()
         if "no player was found" in bajo:
             await inter.followup.send(f"**{esc(jugador)}** no está conectado." if jugador
-                                      else "No hay ningún jugador conectado.", ephemeral=True)
+                                      else "No hay ningún jugador conectado.", ephemeral=bot.privado)
             return salida
         fallo = any(p in bajo for p in PALABRAS_FALLO)
         if fallo:
-            await inter.followup.send(f"❌ {que}: el servidor dijo\n```\n{salida[:1500]}\n```", ephemeral=True)
+            await inter.followup.send(f"❌ {que}: el servidor dijo\n```\n{salida[:1500]}\n```", ephemeral=bot.privado)
         else:
             await inter.followup.send(f"✅ {que}" + (f"\n```\n{salida[:1500]}\n```" if salida else ""),
                                       ephemeral=not publico)
@@ -910,7 +913,7 @@ def registrar_comandos(bot: CobbleBot):
                     value="\n".join(f"**{n} · {t}:** {d}" for n, (t, d) in NIVELES_OP.items()))
         e.set_footer(text="Se lee de ops.json. Desde Discord solo se puede dar el nivel 4 o quitarlo; los niveles "
                           "1-3 se cambian editando ops.json con el servidor parado.")
-        await inter.response.send_message(embed=e, ephemeral=True)
+        await inter.response.send_message(embed=e, ephemeral=bot.privado)
 
     @admin.command(name="modo", description="Cambia el modo de juego de un jugador")
     @app_commands.describe(jugador="Jugador conectado", modo="Modo de juego")
@@ -1067,11 +1070,11 @@ def registrar_comandos(bot: CobbleBot):
                 bot.marcar_reinicio(str(i.user))
                 await bot.rcon.comando("stop")
             except RconError as e:
-                await i.followup.send(f"No pude contactar con el servidor: {e}", ephemeral=True)
+                await i.followup.send(f"No pude contactar con el servidor: {e}", ephemeral=bot.privado)
                 return
             donde = f"en <#{bot.canal_estado}>" if bot.canal_estado else "con `/estado`"
             await i.followup.send(f"✅ Servidor parado. Se vuelve a arrancar solo (tarda 1-2 minutos); "
-                                  f"avisaré {donde} en cuanto se pueda entrar.", ephemeral=True)
+                                  f"avisaré {donde} en cuanto se pueda entrar.", ephemeral=bot.privado)
             await bot.enviar(bot.canal_registro, embed=discord.Embed(
                 description=f"🔄 **{i.user}** reinició el servidor", color=0x555555,
                 timestamp=datetime.now(timezone.utc)))
@@ -1089,7 +1092,7 @@ def registrar_comandos(bot: CobbleBot):
             return
         await inter.response.send_message(
             f"⚠️ ¿Reiniciar el servidor? Se avisará a los jugadores y se reiniciará en {aviso} s.",
-            view=ConfirmarReinicio(inter.user.id, aviso), ephemeral=True)
+            view=ConfirmarReinicio(inter.user.id, aviso), ephemeral=bot.privado)
 
     registrar_teams(bot, tree, admin, ac_jugador, ac_categoria)
 
@@ -1170,23 +1173,23 @@ def registrar_comandos(bot: CobbleBot):
         if not RE_NOMBRE_MC.match(jugador):
             await inter.response.send_message("Ese nombre de jugador no es válido.", ephemeral=True)
             return
-        await inter.response.defer(ephemeral=True)
+        await inter.response.defer(ephemeral=bot.privado)
         try:
             salida = limpiar(await bot.rcon.comando(comando))
         except RconError as e:
-            await inter.followup.send(f"No pude contactar con el servidor: {e}", ephemeral=True)
+            await inter.followup.send(f"No pude contactar con el servidor: {e}", ephemeral=bot.privado)
             return
         bajo = salida.lower()
         if "no player was found" in bajo:
             await inter.followup.send(f"**{esc(jugador)}** no está conectado. Tiene que estar dentro del servidor.",
-                                      ephemeral=True)
+                                      ephemeral=bot.privado)
             return
         fallo = any(p in bajo for p in PALABRAS_FALLO)
         if fallo:
-            await inter.followup.send(f"❌ El servidor no lo aceptó:\n```\n{salida[:1500]}\n```", ephemeral=True)
+            await inter.followup.send(f"❌ El servidor no lo aceptó:\n```\n{salida[:1500]}\n```", ephemeral=bot.privado)
         else:
             await inter.followup.send(f"🎁 Dado a **{esc(jugador)}**: {que}" + (f"\n> {salida[:500]}" if salida else ""),
-                                      ephemeral=True)
+                                      ephemeral=bot.privado)
         await bot.enviar(bot.canal_registro, embed=discord.Embed(
             description=f"🎁 **{inter.user}** dio a **{esc(jugador)}**: {que}" + (f"\n❌ {salida[:300]}" if fallo else ""),
             color=0x8B0000 if fallo else 0x2E8B57, timestamp=datetime.now(timezone.utc)))
@@ -1364,9 +1367,9 @@ def registrar_comandos(bot: CobbleBot):
         if not bot.perfiles:
             await inter.response.send_message("Las estadísticas no están configuradas.", ephemeral=True)
             return
-        await inter.response.defer(ephemeral=True)
+        await inter.response.defer(ephemeral=bot.privado)
         n = await bot.refrescar()
-        await inter.followup.send(f"Estadísticas recargadas: {n} jugadores.", ephemeral=True)
+        await inter.followup.send(f"Estadísticas recargadas: {n} jugadores.", ephemeral=bot.privado)
 
     # ---- /diagnostico (admins)
     @tree.command(name="diagnostico", description="Muestra qué datos encuentra el bot de un jugador (solo admins)")
@@ -1379,7 +1382,7 @@ def registrar_comandos(bot: CobbleBot):
         if not bot.es_admin(inter.user):
             await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
             return
-        await inter.response.defer(ephemeral=True)
+        await inter.response.defer(ephemeral=bot.privado)
         p = await perfil_o_error(inter, jugador)
         if not p:
             return
@@ -1396,12 +1399,12 @@ def registrar_comandos(bot: CobbleBot):
         ]
         cuerpo = "\n".join(texto)
         lista = "\n".join(d["logros_mods"]) or "(ninguno)"
-        await inter.followup.send(cuerpo[:1900], ephemeral=True)
+        await inter.followup.send(cuerpo[:1900], ephemeral=bot.privado)
         # La lista de logros puede ser larga: se manda como archivo
         await inter.followup.send(
             "Lista completa de IDs de logros (para ajustar `[cobbleverse]` en config.toml):",
             file=discord.File(io.BytesIO(lista.encode()), filename=f"logros_{p.nombre}.txt"),
-            ephemeral=True)
+            ephemeral=bot.privado)
 
 
 def main():
@@ -1536,7 +1539,7 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
         if any(t.titulo.lower() == nombre.lower() for t in teams.values()):
             await inter.response.send_message(f"Ya hay un team llamado **{esc(nombre)}**.", ephemeral=True)
             return
-        await inter.response.defer(ephemeral=True)
+        await inter.response.defer(ephemeral=bot.privado)
         tid = id_para(nombre, teams)
         c = color.value if color else "white"
         et = etiqueta_de(etiqueta or "") or nombre
@@ -1546,7 +1549,7 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
         await inter.followup.send(
             f"✅ Team **{esc(nombre)}** creado (nombre interno `{tid}`) · color {COLORES.get(c, c)} · "
             f"en el chat sale `[{et}] Jugador` · fuego amigo {'sí' if fuego_amigo else 'no'}.\n"
-            f"Mete jugadores con `/admin team`.", ephemeral=True)
+            f"Mete jugadores con `/admin team`.", ephemeral=bot.privado)
         await bot.enviar(bot.canal_registro, embed=discord.Embed(
             description=f"🛡️ **{inter.user}** creó el team **{esc(nombre)}** (`{tid}`)", color=0x555555,
             timestamp=datetime.now(timezone.utc)))
@@ -1576,13 +1579,13 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
         if not cmds:
             await inter.response.send_message("No has cambiado nada.", ephemeral=True)
             return
-        await inter.response.defer(ephemeral=True)
+        await inter.response.defer(ephemeral=bot.privado)
         for cmd in cmds:
             await bot.rcon.comando(cmd)
         nuevo = (await bot.guardar_y_releer_teams()).get(t.id, t)
         await inter.followup.send(
             f"✅ Team **{esc(nuevo.titulo)}** actualizado · color {COLORES.get(nuevo.color, nuevo.color)} · "
-            f"en el chat sale `[{nuevo.etiqueta}] Jugador` · fuego amigo {'sí' if nuevo.fuego_amigo else 'no'}.", ephemeral=True)
+            f"en el chat sale `[{nuevo.etiqueta}] Jugador` · fuego amigo {'sí' if nuevo.fuego_amigo else 'no'}.", ephemeral=bot.privado)
 
     class ConfirmarBorrado(discord.ui.View):
         def __init__(self, autor_id: int, t: Team):
@@ -1619,7 +1622,7 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
             return
         await inter.response.send_message(
             f"⚠️ ¿Borrar el team **{esc(t.titulo)}**? Sus miembros se quedarán sin team.",
-            view=ConfirmarBorrado(inter.user.id, t), ephemeral=True)
+            view=ConfirmarBorrado(inter.user.id, t), ephemeral=bot.privado)
 
     @admin.command(name="team", description="Mete a un jugador en un team de Minecraft (o lo saca)")
     @app_commands.describe(jugador="Jugador de Minecraft", team="Team (o 'Sin team' para sacarlo)")
@@ -1642,11 +1645,11 @@ async def ejecutar_admin(bot: CobbleBot, inter: discord.Interaction, comando: st
     if not bot.es_admin(inter.user):
         await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
         return
-    await inter.response.defer(ephemeral=True)
+    await inter.response.defer(ephemeral=bot.privado)
     salida = limpiar(await bot.rcon.comando(comando))
     fallo = any(p in salida.lower() for p in PALABRAS_FALLO)
     await inter.followup.send(("❌ " if fallo else "✅ ") + que + (f"\n```\n{salida[:1500]}\n```" if salida else ""),
-                              ephemeral=True)
+                              ephemeral=bot.privado)
     await bot.enviar(bot.canal_registro, embed=discord.Embed(
         description=f"🛡️ **{inter.user}**: {que}\n`/{comando}`" + (f"\n❌ {salida[:300]}" if fallo else ""),
         color=0x8B0000 if fallo else 0x555555, timestamp=datetime.now(timezone.utc)))
