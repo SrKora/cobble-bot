@@ -22,6 +22,15 @@ services:
     networks:
       - servidor
     restart: unless-stopped
+    # Endurecido: si alguna vez hubiera un fallo en el bot, dentro del contenedor no se podría hacer nada.
+    read_only: true                   # el sistema de archivos del contenedor no se puede modificar…
+    tmpfs:
+      - /tmp                          # …salvo /tmp, en memoria y que se borra al reiniciar
+    security_opt:
+      - no-new-privileges:true        # ningún proceso puede ganar más permisos (sudo, setuid…)
+    cap_drop:
+      - ALL                           # sin ningún privilegio especial de Linux (el bot no necesita ninguno)
+    pids_limit: 256                   # tope de procesos
 
 networks:
   servidor:

@@ -979,7 +979,9 @@ def registrar_comandos(bot: CobbleBot):
         if jugador is not None and not RE_NOMBRE_MC.match(jugador):
             await inter.response.send_message("Ese nombre de jugador no es válido.", ephemeral=True)
             return None
-        await inter.response.defer(ephemeral=not publico)
+        privado = bot.privado and not publico
+        if not inter.response.is_done():
+            await inter.response.defer(ephemeral=privado)
         try:
             salida = limpiar(await bot.rcon.comando(comando))
         except RconError as e:
@@ -995,11 +997,50 @@ def registrar_comandos(bot: CobbleBot):
             await inter.followup.send(f"❌ {que}: el servidor dijo\n```\n{salida[:1500]}\n```", ephemeral=bot.privado)
         else:
             await inter.followup.send(f"✅ {que}" + (f"\n```\n{salida[:1500]}\n```" if salida else ""),
-                                      ephemeral=not publico)
+                                      ephemeral=privado)
         await bot.enviar(bot.canal_registro, embed=discord.Embed(
             description=f"🔧 **{inter.user}**: {que}\n`/{comando}`" + (f"\n❌ {salida[:300]}" if fallo else ""),
             color=0x8B0000 if fallo else 0x555555, timestamp=datetime.now(timezone.utc)))
         return salida
+
+    class ConfirmarAccion(discord.ui.View):
+        """Botones Sí/Cancelar antes de una acción grave. Solo puede pulsarlos quien lanzó el comando."""
+
+        def __init__(self, autor_id: int, pregunta: str, comando: str, que: str, jugador: str | None):
+            super().__init__(timeout=60)
+            self.autor_id, self.pregunta, self.comando, self.que, self.jugador = autor_id, pregunta, comando, que, jugador
+
+        async def interaction_check(self, i: discord.Interaction) -> bool:
+            if i.user.id != self.autor_id:
+                await i.response.send_message("Solo quien lanzó el comando puede confirmarlo.", ephemeral=True)
+                return False
+            return True
+
+        @discord.ui.button(label="Sí, hacerlo", style=discord.ButtonStyle.danger)
+        async def si(self, i: discord.Interaction, _):
+            self.stop()
+            await ejecutar(i, self.comando, self.que, self.jugador)
+            try:
+                await i.edit_original_response(content=f"{self.pregunta}\n✔️ Confirmado por {i.user.mention}", view=None)
+            except discord.HTTPException:
+                pass
+
+        @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+        async def no(self, i: discord.Interaction, _):
+            self.stop()
+            await i.response.edit_message(content=f"{self.pregunta}\n✖️ Cancelado, no se ha hecho nada.", view=None)
+
+    async def pedir_confirmacion(inter: discord.Interaction, pregunta: str, comando: str, que: str,
+                                 jugador: str | None = None):
+        if not bot.es_admin(inter.user):
+            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+            return
+        if jugador is not None and not RE_NOMBRE_MC.match(jugador):
+            await inter.response.send_message("Ese nombre de jugador no es válido.", ephemeral=True)
+            return
+        pregunta = f"⚠️ {pregunta}"
+        await inter.response.send_message(pregunta, view=ConfirmarAccion(inter.user.id, pregunta, comando, que, jugador),
+                                          ephemeral=bot.privado)
 
     async def ac_baneado(inter: discord.Interaction, actual: str):
         datos = (await bot.fuente.leer_json("banned-players.json") if bot.fuente else None) or []
@@ -1021,8 +1062,10 @@ def registrar_comandos(bot: CobbleBot):
     async def adm_banear(inter: discord.Interaction, jugador: str, motivo: str | None = None):
         jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         m = texto_seguro(motivo)
-        await ejecutar(inter, f"ban {jugador} {m}".strip(), f"Baneado **{esc(jugador)}**" + (f" ({m})" if m else ""),
-                       jugador)
+        await pedir_confirmacion(inter, f"¿Banear a **{esc(jugador)}**" + (f" ({esc(m)})" if m else "")
+                                 + "? No podrá volver a entrar hasta que alguien lo desbanee.",
+                                 f"ban {jugador} {m}".strip(), f"Baneado **{esc(jugador)}**" + (f" ({m})" if m else ""),
+                                 jugador)
 
     @admin.command(name="desbanear", description="Quita el ban a un jugador")
     @app_commands.describe(jugador="Jugador baneado")
@@ -1049,6 +1092,9 @@ def registrar_comandos(bot: CobbleBot):
                 return
             await ejecutar(inter, f"whitelist {accion.value} {jugador}", f"Whitelist: {accion.name.lower()} **{esc(jugador)}**",
                            jugador)
+        elif accion.value == "off":
+            await pedir_confirmacion(inter, "¿Desactivar la lista blanca? Podrá entrar **cualquiera** que llegue al "
+                                            "servidor.", "whitelist off", f"Whitelist: {accion.name.lower()}")
         else:
             await ejecutar(inter, f"whitelist {accion.value}", f"Whitelist: {accion.name.lower()}")
 
@@ -1064,8 +1110,10 @@ def registrar_comandos(bot: CobbleBot):
     async def adm_op(inter: discord.Interaction, jugador: str, accion: app_commands.Choice[str]):
         jugador = nombre_jugador(jugador)   # sin [etiqueta] ni '🟢 … (conectado)'
         if accion.value == "op":
-            await ejecutar(inter, f"op {jugador}",
-                           f"**{esc(jugador)}** es operador (nivel 4 · {NIVELES_OP[4][0]}: {NIVELES_OP[4][1]})", jugador)
+            await pedir_confirmacion(
+                inter, f"¿Hacer operador a **{esc(jugador)}**? Tendrá el **nivel 4** ({NIVELES_OP[4][0]}): "
+                       f"{NIVELES_OP[4][1]}.", f"op {jugador}",
+                f"**{esc(jugador)}** es operador (nivel 4 · {NIVELES_OP[4][0]}: {NIVELES_OP[4][1]})", jugador)
         else:
             await ejecutar(inter, f"deop {jugador}", f"**{esc(jugador)}** ya no es operador (jugador normal)", jugador)
 
