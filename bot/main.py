@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -31,7 +32,17 @@ COLOR = 0xE3350D  # rojo Poké Ball
 RE_COLORES = re.compile(r"§.")
 MEDALLAS_POR_REGION = 8
 SKIN_CACHE_SEGUNDOS = 3600
-SEGUNDOS_MONITOR_CAIDO = 3     # con el servidor caído se comprueba así de a menudo si ya se puede entrar
+SEGUNDOS_MONITOR_CAIDO = 3
+# Niveles de operador de Minecraft: qué permite cada uno (cada nivel incluye los anteriores)
+NIVELES_OP = {
+    0: ("Jugador normal", "sin comandos de operador"),
+    1: ("Constructor", "construir y romper en la zona protegida del spawn"),
+    2: ("Trucos", "/gamemode, /give, /tp, /time, /weather, /effect, /pokegive, /pokeheal…"),
+    3: ("Moderador", "lo del nivel 2 + /kick, /ban, /pardon, /whitelist, /op y /deop"),
+    4: ("Dueño", "todo, incluido /stop (apagar el servidor) y /save-off"),
+}
+# Dónde puede escribir el bot ops.json (en Docker se monta solo ese archivo con escritura)
+RUTA_OPS_ESCRITURA = os.environ.get("MC_OPS_ESCRITURA", "/permisos/ops.json")     # con el servidor caído se comprueba así de a menudo si ya se puede entrar
 RE_NOMBRE_MC = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 PALABRAS_FALLO = ("unknown", "invalid", "error", "incorrect", "expected", "not found", "no se ", "desconocid",
                   "could not", "nothing changed", "is not")
@@ -285,6 +296,43 @@ class CobbleBot(discord.Client):
         cmds.append(f"title {destino} title {a_json(componentes(titulo or ' ', estilo))}")
         return cmds
 
+    def ruta_ops(self) -> Path | None:
+        """ops.json con permiso de escritura (para poner niveles de operador 1-3)."""
+        p = Path(RUTA_OPS_ESCRITURA)
+        if p.is_file():
+            return p
+        local = self.fuente.ruta_local("ops.json") if self.fuente else None
+        return local if local and local.is_file() and os.access(local, os.W_OK) else None
+
+    async def operadores(self) -> list[dict]:
+        datos = (await self.fuente.leer_json("ops.json") if self.fuente else None) or []
+        return [o for o in datos if isinstance(o, dict) and o.get("name")]
+
+    async def poner_nivel_op(self, jugador: str, nivel: int) -> str:
+        """Escribe el nivel en ops.json (se aplica al reiniciar el servidor). Devuelve el nombre exacto."""
+        ruta = self.ruta_ops()
+        if not ruta:
+            raise RuntimeError("El bot no puede escribir ops.json (en Docker hay que montarlo; mira el README).")
+        ops = json.loads(ruta.read_text(encoding="utf-8") or "[]")
+        entrada = next((o for o in ops if o.get("name", "").lower() == jugador.lower()), None)
+        if entrada is None:
+            cache = (await self.fuente.leer_json("usercache.json") if self.fuente else None) or []
+            conocido = next((c for c in cache if c.get("name", "").lower() == jugador.lower()), None)
+            if not conocido:
+                raise RuntimeError(f"{jugador} no ha entrado nunca al servidor: no conozco su UUID.")
+            entrada = {"uuid": conocido["uuid"], "name": conocido["name"], "level": nivel,
+                       "bypassesPlayerLimit": False}
+            ops.append(entrada)
+        entrada["level"] = nivel
+        # Se escribe sobre el mismo archivo (no se sustituye) para que el montaje de Docker siga apuntando a él
+        with open(ruta, "w", encoding="utf-8") as fh:
+            json.dump(ops, fh, indent=2)
+        # Comprobación: se relee por la vista de solo lectura del servidor
+        if self.fuente and not any(o.get("name") == entrada["name"] and o.get("level") == nivel
+                                   for o in await self.operadores()):
+            raise RuntimeError("Escribí ops.json pero el servidor no ve el cambio (¿montaje de Docker mal?).")
+        return entrada["name"]
+
     def comando_permitido(self, cmd: str) -> bool:
         if "*" in self.permitidos:
             return True
@@ -523,7 +571,7 @@ def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.E
             "El jugador tiene que estar conectado. Todo queda registrado."))
     if admin:
         e.add_field(name="🔧 Admins", inline=False, value=(
-            "`/admin …` — gestión del servidor: expulsar, banear, whitelist, op, modo de juego, teletransporte, "
+            "`/admin …` — gestión del servidor: expulsar, banear, whitelist, operadores (con niveles), modo de juego, teletransporte, "
             "hora, clima, dificultad, curar, experiencia, guardar y reiniciar\n"
             "`/admin mensaje` — mensajes en el juego (chat, título o encima de la hotbar) con colores: "
             "`&6` dorado, `&c` rojo, `&a` verde, `&l` negrita…\n"
@@ -790,13 +838,58 @@ def registrar_comandos(bot: CobbleBot):
         else:
             await ejecutar(inter, f"whitelist {accion.value}", f"Whitelist: {accion.name.lower()}")
 
-    @admin.command(name="op", description="Da o quita permisos de operador (comandos dentro del juego)")
-    @app_commands.describe(jugador="Jugador", accion="Dar o quitar")
-    @app_commands.choices(accion=[app_commands.Choice(name="Dar operador", value="op"),
-                                  app_commands.Choice(name="Quitar operador", value="deop")])
+    @admin.command(name="op", description="Pone el nivel de operador de un jugador (qué comandos puede usar en el juego)")
+    @app_commands.describe(jugador="Jugador", nivel="Nivel de operador (cada uno incluye los anteriores)")
+    @app_commands.choices(nivel=[app_commands.Choice(name=f"{n} · {t}: {d}"[:100], value=n)
+                                 for n, (t, d) in NIVELES_OP.items()])
     @app_commands.autocomplete(jugador=ac_jugador)
-    async def adm_op(inter: discord.Interaction, jugador: str, accion: app_commands.Choice[str]):
-        await ejecutar(inter, f"{accion.value} {jugador}", f"{accion.name}: **{esc(jugador)}**", jugador)
+    async def adm_op(inter: discord.Interaction, jugador: str, nivel: app_commands.Choice[int]):
+        n = nivel.value
+        titulo, que_hace = NIVELES_OP[n]
+        if n == 0:
+            await ejecutar(inter, f"deop {jugador}", f"**{esc(jugador)}** ya no es operador (jugador normal)", jugador)
+            return
+        if n == 4:
+            await ejecutar(inter, f"op {jugador}", f"**{esc(jugador)}** es operador nivel 4 · {titulo}: {que_hace}",
+                           jugador)
+            return
+        # Niveles 1-3: Minecraft no tiene comando para esto; se edita ops.json y se aplica al reiniciar
+        if not bot.es_admin(inter.user):
+            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+            return
+        if not RE_NOMBRE_MC.match(jugador):
+            await inter.response.send_message("Ese nombre de jugador no es válido.", ephemeral=True)
+            return
+        try:
+            nombre = await bot.poner_nivel_op(jugador, n)
+        except (RuntimeError, OSError, ValueError) as e:
+            await inter.response.send_message(f"❌ {e}", ephemeral=True)
+            return
+        log.info("%s puso a %s como operador nivel %d", inter.user, nombre, n)
+        await inter.response.send_message(
+            f"✅ **{esc(nombre)}** queda como operador **nivel {n} · {titulo}** ({que_hace})\n\n"
+            "⚠️ Minecraft solo lee los niveles al arrancar: **se aplicará en el próximo reinicio** del servidor. "
+            "Hasta entonces conserva los permisos que tenía. No uses `/op` ni `/deop` dentro del juego antes de "
+            "reiniciar, o el servidor sobrescribirá este cambio.\n¿Reiniciar ahora?",
+            view=ConfirmarReinicio(inter.user.id, 30), ephemeral=True)
+        await bot.enviar(bot.canal_registro, embed=discord.Embed(
+            description=f"🔧 **{inter.user}**: **{esc(nombre)}** → operador nivel {n} ({titulo}). Pendiente de reinicio.",
+            color=0x555555, timestamp=datetime.now(timezone.utc)))
+
+    @admin.command(name="operadores", description="Quién es operador y con qué nivel")
+    async def adm_operadores(inter: discord.Interaction):
+        if not bot.es_admin(inter.user):
+            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+            return
+        ops = await bot.operadores()
+        e = discord.Embed(title="🛡️ Operadores del servidor", color=COLOR)
+        e.description = "\n".join(
+            f"**{esc(o['name'])}** — nivel {o.get('level', 4)} · {NIVELES_OP.get(o.get('level', 4), ('?', ''))[0]}"
+            for o in sorted(ops, key=lambda o: (-o.get("level", 4), o["name"].lower()))) or "No hay operadores."
+        e.add_field(name="Qué permite cada nivel (cada uno incluye los anteriores)", inline=False,
+                    value="\n".join(f"**{n} · {t}:** {d}" for n, (t, d) in NIVELES_OP.items()))
+        e.set_footer(text="Se lee de ops.json. Los cambios de nivel 1-3 se aplican al reiniciar el servidor.")
+        await inter.response.send_message(embed=e, ephemeral=True)
 
     @admin.command(name="modo", description="Cambia el modo de juego de un jugador")
     @app_commands.describe(jugador="Jugador conectado", modo="Modo de juego")

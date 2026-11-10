@@ -16,6 +16,8 @@ services:
       MC_CARPETA_SERVIDOR: /data      # dentro del contenedor el servidor siempre está en /data
     volumes:
       - ${MC_DATOS:?Falta MC_DATOS en el .env (carpeta data del servidor)}:/data:ro
+      # Única excepción a "solo lectura": ops.json, para /admin op con niveles 1-3
+      - ${MC_DATOS}/ops.json:/permisos/ops.json
       - ./config.toml:/config/config.toml:ro
     networks:
       - servidor
