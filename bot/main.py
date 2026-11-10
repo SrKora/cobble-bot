@@ -796,7 +796,7 @@ def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.E
             "⚠️ = pide confirmar con un botón antes de hacerlo"])
         campo("🛡️ Admins · teams y ligas", [
             "`/admin team-crear nombre [color] [etiqueta] [rol] [emoji] [fuego_amigo]` — sin `rol`, el bot crea uno",
-            "`/admin team-editar` · `team-borrar` — cambiar o borrar un team",
+            "`/admin team-editar` · `team-borrar`⚠️ — cambiar o borrar un team",
             "`/admin team usuario team` — meter, cambiar o sacar a alguien de un team",
             "`/admin vincular usuario jugador` · `desvincular usuario` — vínculos a mano",
             "`/admin ligas [canal] [region] [rol]` — canal de anuncios y rol de cada liga"])
