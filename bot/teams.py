@@ -1,56 +1,102 @@
-"""Teams de Minecraft (scoreboard teams) gestionados por RCON y consultables desde Discord.
+"""Teams de Minecraft (scoreboard teams): se crean y gestionan desde Discord por RCON y se leen del mundo.
 
-- Cada team se define en config.toml ([[teams]]): id del team en Minecraft, nombre, color, prefijo…
-- Los teams viven SOLO en el juego: el bot los crea con comandos y mete o saca jugadores con
-  /team join|leave (desde Discord, /admin team; también vale hacerlo dentro del juego con /team).
-- Discord solo muestra la información (miembros, ranking), leída del propio servidor.
+- Los teams viven SOLO en el juego. Los crea un admin desde Discord (/admin team-crear) con el nombre,
+  color y prefijo que quiera, o cualquiera con permisos dentro del juego con /team.
+- El bot los lee de world/data/scoreboard.dat (solo lectura): nombre, color, prefijo, fuego amigo…
+  Ese archivo se actualiza cuando el servidor guarda; tras crear/editar/borrar, el bot fuerza un guardado.
+- Los miembros se preguntan en directo al servidor (/team list <team>).
 
 El bot no guarda nada ni escribe en los archivos del servidor: todo va por comandos.
 """
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 
-RE_ID_TEAM = re.compile(r"^[a-z0-9_.+-]{1,16}$")
+RE_ID_TEAM = re.compile(r"^[A-Za-z0-9_.+-]{1,16}$")
+RUTA_SCOREBOARD = "data/scoreboard.dat"     # dentro de la carpeta del mundo
 
 
 @dataclass
 class Team:
-    id: str              # nombre del team dentro de Minecraft (sin espacios)
-    nombre: str          # nombre bonito
+    id: str              # nombre interno del team en Minecraft (sin espacios)
+    nombre: str          # nombre que se ve
     color: str = "white"
-    prefijo: str = ""    # delante del nombre en el chat y la lista de jugadores
-    fuego_amigo: bool = False
-    emoji: str = ""
+    prefijo: str = ""    # delante del nombre del jugador en el chat y en la lista de jugadores
+    fuego_amigo: bool = True
+    miembros_guardados: tuple[str, ...] = ()   # los del último guardado del mundo (los de verdad: /team list)
 
     @property
     def titulo(self) -> str:
-        return f"{self.emoji} {self.nombre}".strip()
+        return self.nombre or self.id
 
 
-def cargar_teams(cfg: dict) -> dict[str, Team]:
+def texto_de_json(valor) -> str:
+    """Texto plano de un componente de texto de Minecraft ('{"text":"Hola","extra":[...]}', '"Hola"'…)."""
+    if isinstance(valor, str):
+        try:
+            valor = json.loads(valor)
+        except ValueError:
+            return valor
+    if isinstance(valor, str):
+        return valor
+    if isinstance(valor, list):
+        return "".join(texto_de_json(v) for v in valor)
+    if isinstance(valor, dict):
+        return str(valor.get("text", "")) + "".join(texto_de_json(v) for v in valor.get("extra", []))
+    return ""
+
+
+def leer_scoreboard(datos: dict) -> dict[str, Team]:
+    """Teams del scoreboard.dat ya parseado (NBT)."""
     teams = {}
-    for t in cfg.get("teams", []) or []:
-        tid = str(t.get("id", "")).lower()
-        if not RE_ID_TEAM.match(tid):
+    for t in (datos.get("data") or {}).get("Teams", []) or []:
+        tid = str(t.get("Name", ""))
+        if not tid:
             continue
-        teams[tid] = Team(tid, str(t.get("nombre") or tid), str(t.get("color", "white")),
-                          str(t.get("prefijo", "")), bool(t.get("fuego_amigo", False)), str(t.get("emoji", "")))
-    return teams
+        teams[tid] = Team(
+            id=tid,
+            nombre=texto_de_json(t.get("DisplayName", "")) or tid,
+            color=str(t.get("TeamColor", "reset")),
+            prefijo=texto_de_json(t.get("MemberNamePrefix", "")),
+            fuego_amigo=bool(t.get("AllowFriendlyFire", 1)),
+            miembros_guardados=tuple(t.get("Players", []) or []),
+        )
+    return dict(sorted(teams.items(), key=lambda kv: kv[1].titulo.lower()))
 
 
-def comandos_crear(t: Team) -> list[str]:
-    """Comandos (idempotentes) para que el team exista en Minecraft con su color y prefijo."""
-    nombre = json.dumps({"text": t.nombre, "color": t.color}, ensure_ascii=False)
-    prefijo = json.dumps({"text": t.prefijo, "color": t.color}, ensure_ascii=False)
-    return [
-        f"team add {t.id} {nombre}",                      # si ya existe, el servidor solo avisa
-        f"team modify {t.id} displayName {nombre}",
-        f"team modify {t.id} color {t.color}",
-        f"team modify {t.id} prefix {prefijo}",
-        f"team modify {t.id} friendlyFire {'true' if t.fuego_amigo else 'false'}",
-        f"team modify {t.id} seeFriendlyInvisibles true",
-    ]
+def id_para(nombre: str, existentes) -> str:
+    """'Los Dragones Ñ' -> 'los_dragones_n' (válido para Minecraft y que no esté ya cogido)."""
+    t = unicodedata.normalize("NFKD", nombre).encode("ascii", "ignore").decode().lower()
+    base = re.sub(r"[^a-z0-9]+", "_", t).strip("_")[:14] or "team"
+    tid, n = base, 2
+    while tid in existentes:
+        tid, n = f"{base[:13]}_{n}", n + 1
+    return tid
+
+
+def comandos_crear(tid: str, nombre: str, color: str, prefijo: str, fuego_amigo: bool) -> list[str]:
+    """Comandos para crear un team con su nombre, color, prefijo y fuego amigo."""
+    nombre_json = json.dumps({"text": nombre, "color": color}, ensure_ascii=False)
+    return ([f"team add {tid} {nombre_json}"]
+            + comandos_editar(tid, nombre=None, color=color, prefijo=prefijo, fuego_amigo=fuego_amigo)
+            + [f"team modify {tid} seeFriendlyInvisibles true"])
+
+
+def comandos_editar(tid: str, nombre: str | None = None, color: str | None = None, prefijo: str | None = None,
+                    fuego_amigo: bool | None = None, color_actual: str = "white") -> list[str]:
+    """Solo los cambios pedidos (None = no tocar)."""
+    c = color or color_actual
+    cmds = []
+    if nombre is not None:
+        cmds.append(f"team modify {tid} displayName {json.dumps({'text': nombre, 'color': c}, ensure_ascii=False)}")
+    if color is not None:
+        cmds.append(f"team modify {tid} color {color}")
+    if prefijo is not None:
+        cmds.append(f"team modify {tid} prefix {json.dumps({'text': prefijo, 'color': c}, ensure_ascii=False)}")
+    if fuego_amigo is not None:
+        cmds.append(f"team modify {tid} friendlyFire {'true' if fuego_amigo else 'false'}")
+    return cmds
 
 
 def parsear_miembros(salida: str) -> list[str]:

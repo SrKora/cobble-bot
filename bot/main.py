@@ -25,7 +25,9 @@ from .objetos_datos import Mod, buscar, catalogo_de_jars
 from .texto_mc import COLORES, a_json, componentes, texto_plano
 from .perfiles import NOMBRES_COBBLEMON, REGIONES, Perfiles, Perfil, bonito
 from .rcon import RconClient, RconError
-from .teams import Team, cargar_teams, comandos_crear, parsear_miembros
+from . import nbt
+from .teams import (RUTA_SCOREBOARD, Team, comandos_crear, comandos_editar, id_para, leer_scoreboard,
+                    parsear_miembros)
 
 log = logging.getLogger("cobblebot")
 COLOR = 0xE3350D  # rojo Poké Ball
@@ -128,8 +130,9 @@ class CobbleBot(discord.Client):
         self._caido_desde: float | None = None
         # Avisar en Discord de quién entra y sale del servidor (los avisos de caída/reinicio van siempre)
         self.avisar_entradas = bool(cfg.get("monitor", {}).get("avisar_entradas", False))
-        # Teams: definidos en config.toml; viven solo en Minecraft (el bot no guarda nada)
-        self.teams: dict[str, Team] = cargar_teams(cfg)
+        # Teams: viven solo en Minecraft; se leen del mundo (scoreboard.dat) y se cambian por comandos
+        self.carpeta_mundo = cfg.get("archivos", {}).get("carpeta_mundo", "world").strip("/")
+        self._teams_cache: tuple[float, dict[str, Team]] | None = None
         self._reinicio_por: str | None = None     # quién pidió el reinicio con /admin reiniciar
         self._visto_caido = False                 # tras pedir un reinicio, hay que verlo caer antes de darlo por levantado
         self.intervalo_monitor = int(cfg.get("monitor", {}).get("intervalo_segundos", 30))
@@ -160,24 +163,43 @@ class CobbleBot(discord.Client):
 
     async def on_ready(self):
         log.info("Conectado como %s", self.user)
-        if self.teams:
-            asyncio.create_task(self.preparar_teams_mc())
         # Se cargan ya los datos pesados (especies, objetos) para que el primer /dar no tarde
         asyncio.create_task(self._precargar())
 
     # ---------------------------------------------------------------- teams
-    async def preparar_teams_mc(self):
-        """Crea los teams en Minecraft con su color y prefijo (si ya existen, solo los actualiza)."""
+    async def _leer_scoreboard_bytes(self) -> bytes | None:
+        return await self.fuente.leer_bytes(f"{self.carpeta_mundo}/{RUTA_SCOREBOARD}") if self.fuente else None
+
+    async def teams_mc(self, forzar: bool = False) -> dict[str, Team]:
+        """Teams que existen en el mundo (leídos de scoreboard.dat; caché de 30 s)."""
+        if not forzar and self._teams_cache and time.time() - self._teams_cache[0] < 30:
+            return self._teams_cache[1]
+        teams: dict[str, Team] = {}
         try:
-            for t in self.teams.values():
-                for c in comandos_crear(t):
-                    await self.rcon.comando(c)
+            datos = await self._leer_scoreboard_bytes()
+            if datos:
+                teams = leer_scoreboard(nbt.cargar(datos))
+        except Exception:
+            log.exception("No pude leer los teams del mundo")
+        self._teams_cache = (time.time(), teams)
+        return teams
+
+    async def guardar_y_releer_teams(self) -> dict[str, Team]:
+        """Tras crear/editar/borrar un team: fuerza un guardado para que scoreboard.dat lo refleje."""
+        antes = await self._leer_scoreboard_bytes()
+        try:
+            await self.rcon.comando("save-all")
         except RconError:
             pass
+        for _ in range(20):          # hasta ~10 s
+            await asyncio.sleep(0.5)
+            if await self._leer_scoreboard_bytes() != antes:
+                break
+        return await self.teams_mc(forzar=True)
 
     async def miembros_teams(self) -> dict[str, list[str]]:
         """Miembros de cada team, preguntados al servidor (lanza RconError si no responde)."""
-        return {tid: parsear_miembros(await self.rcon.comando(f"team list {tid}")) for tid in self.teams}
+        return {tid: parsear_miembros(await self.rcon.comando(f"team list {tid}")) for tid in await self.teams_mc()}
 
     async def team_de_jugador(self, jugador: str) -> str | None:
         for tid, miembros in (await self.miembros_teams()).items():
@@ -357,9 +379,6 @@ class CobbleBot(discord.Client):
         """Mientras el servidor está caído se comprueba cada pocos segundos, para avisar en cuanto se pueda entrar."""
         self.monitor.change_interval(seconds=SEGUNDOS_MONITOR_CAIDO)
 
-    async def _teams_tras_reinicio(self):
-        await self.preparar_teams_mc()
-
     def marcar_reinicio(self, quien: str):
         """Reinicio pedido desde Discord: no hace falta esperar a los fallos para darlo por caído."""
         self._reinicio_por = quien
@@ -409,8 +428,6 @@ class CobbleBot(discord.Client):
             await self.enviar(self.canal_estado, embed=e)
             self.monitor.change_interval(seconds=self.intervalo_monitor)
             log.info("Servidor de vuelta: avisado en Discord")
-            if self.teams:
-                asyncio.create_task(self._teams_tras_reinicio())
         self._servidor_activo = True
         self._caido_desde = None
         self._reinicio_por = None
@@ -556,12 +573,11 @@ def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.E
         "`/top categoría [región] [cantidad]` — ranking de jugadores. "
         "La región solo cuenta para medallas y ligas.\n"
         f"Categorías: {cats}")[:1024])
-    if bot.teams:
-        e.add_field(name="🛡️ Teams", inline=False, value=(
-            "`/team info [team]` — miembros de cada team (🟢 = conectado)\n"
-            "`/team jugador nombre` — en qué team está un jugador\n"
-            "`/team ranking categoría` — competición entre teams\n"
-            "Para entrar en un team, pídeselo a un admin."))
+    e.add_field(name="🛡️ Teams", inline=False, value=(
+        "`/team info [team]` — miembros de cada team (🟢 = conectado)\n"
+        "`/team jugador nombre` — en qué team está un jugador\n"
+        "`/team ranking categoría` — competición entre teams\n"
+        "Para entrar en un team, pídeselo a un admin."))
     if regalar:
         e.add_field(name="🎁 Regalos", inline=False, value=(
             "`/dar pokemon jugador especie […]` — da un Pokémon. Opcional: nivel, shiny, sexo, naturaleza, "
@@ -577,6 +593,7 @@ def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.E
             "`/admin mensaje` — mensajes en el juego (chat, título o encima de la hotbar) con colores: "
             "`&6` dorado, `&c` rojo, `&a` verde, `&l` negrita…\n"
             "`/comando texto` — cualquier comando permitido (con lista de sugerencias)\n"
+            "`/admin team-crear` · `team-editar` · `team-borrar` — teams con el nombre, color y prefijo que quieras\n"
             "`/admin team jugador team` — mete a un jugador en un team (o lo saca)\n"
             "`/actualizar` — guarda el mundo y recarga los datos al momento\n"
             "`/diagnostico jugador` — qué archivos y logros encuentra el bot (para ajustar la config)"))
@@ -1045,8 +1062,7 @@ def registrar_comandos(bot: CobbleBot):
             f"⚠️ ¿Reiniciar el servidor? Se avisará a los jugadores y se reiniciará en {aviso} s.",
             view=ConfirmarReinicio(inter.user.id, aviso), ephemeral=True)
 
-    if bot.teams:
-        registrar_teams(bot, tree, admin, ac_jugador, ac_categoria)
+    registrar_teams(bot, tree, admin, ac_jugador, ac_categoria)
 
     tree.add_command(admin)
 
@@ -1372,24 +1388,48 @@ def main():
 # =================================================================== teams
 def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_commands.Group,
                     ac_jugador, ac_categoria):
-    opciones_team = [app_commands.Choice(name=t.titulo[:100], value=tid) for tid, t in list(bot.teams.items())[:24]]
     grupo = app_commands.Group(name="team", description="Teams del servidor: miembros y competición",
                                guild_only=True)
+    opciones_color = [app_commands.Choice(name=n, value=v) for v, n in COLORES.items()]
+
+    async def ac_team(inter: discord.Interaction, actual: str):
+        a = actual.lower()
+        return [app_commands.Choice(name=f"{t.titulo} ({tid})"[:100], value=tid)
+                for tid, t in (await bot.teams_mc()).items() if a in t.titulo.lower() or a in tid.lower()][:25]
+
+    async def ac_team_o_ninguno(inter: discord.Interaction, actual: str):
+        return ([app_commands.Choice(name="Sin team (sacarlo)", value="-")] + await ac_team(inter, actual))[:25]
+
+    async def team_o_error(inter: discord.Interaction, tid: str) -> Team | None:
+        t = (await bot.teams_mc()).get(tid) or (await bot.teams_mc(forzar=True)).get(tid)
+        if not t:
+            await inter.response.send_message(f"No existe el team **{esc(tid)}**. Elígelo de la lista.", ephemeral=True)
+        return t
 
     @grupo.command(name="info", description="Miembros de cada team (o de uno)")
     @app_commands.describe(team="Solo este team (opcional)")
-    @app_commands.choices(team=opciones_team)
-    async def team_info(inter: discord.Interaction, team: app_commands.Choice[str] | None = None):
+    @app_commands.autocomplete(team=ac_team)
+    async def team_info(inter: discord.Interaction, team: str | None = None):
+        teams = await bot.teams_mc()
+        if team and not await team_o_error(inter, team):
+            return
         await inter.response.defer()
+        if not teams:
+            await inter.followup.send("Todavía no hay ningún team. Un admin puede crearlos con `/admin team-crear`.")
+            return
         miembros = await bot.miembros_teams()
         conectados = {n.lower() for n in (bot._online_previo or ())}
-        ids = [team.value] if team else list(bot.teams)
-        e = discord.Embed(title="🛡️ Teams" if not team else f"🛡️ {bot.teams[team.value].titulo}", color=COLOR)
-        for tid in ids:
+        ids = [team] if team else list(teams)
+        e = discord.Embed(title="🛡️ Teams" if not team else f"🛡️ {teams[team].titulo}", color=COLOR)
+        for tid in ids[:25]:
             lista = sorted(miembros.get(tid, []), key=lambda n: (n.lower() not in conectados, n.lower()))
             texto = (("\n" if team else ", ").join(f"{'🟢 ' if n.lower() in conectados else ''}{esc(n)}"
                                                      for n in lista)) or "Sin miembros todavía"
-            e.add_field(name=f"{bot.teams[tid].titulo} ({len(lista)})", value=texto[:1024], inline=not team)
+            e.add_field(name=f"{teams[tid].titulo} ({len(lista)})", value=texto[:1024], inline=not team)
+        if team:
+            t = teams[team]
+            e.description = (f"Color: **{COLORES.get(t.color, t.color)}** · Prefijo: `{t.prefijo or '—'}` · "
+                             f"Fuego amigo: **{'sí' if t.fuego_amigo else 'no'}**")
         e.set_footer(text="🟢 = conectado ahora · Para entrar en un team, pídeselo a un admin")
         await inter.followup.send(embed=e)
 
@@ -1399,8 +1439,9 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
     async def team_jugador(inter: discord.Interaction, jugador: str):
         await inter.response.defer()
         tid = await bot.team_de_jugador(jugador)
+        teams = await bot.teams_mc()
         if tid:
-            await inter.followup.send(f"🛡️ **{esc(jugador)}** está en **{bot.teams[tid].titulo}**.")
+            await inter.followup.send(f"🛡️ **{esc(jugador)}** está en **{esc(teams[tid].titulo if tid in teams else tid)}**.")
         else:
             await inter.followup.send(f"**{esc(jugador)}** no está en ningún team.")
 
@@ -1415,11 +1456,15 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
             await inter.response.send_message("Esa categoría no existe. Elígela de la lista.", ephemeral=True)
             return
         await inter.response.defer()
+        teams = await bot.teams_mc()
+        if not teams:
+            await inter.followup.send("Todavía no hay ningún team.")
+            return
         reg = region.value if (region and cat.por_region) else None
         miembros_mc = await bot.miembros_teams()
         perfiles = {p.nombre.lower(): p for p in await bot.perfiles.todos()}
         filas = []
-        for tid, t in bot.teams.items():
+        for tid, t in teams.items():
             nombres = miembros_mc.get(tid, [])
             miembros = [perfiles[n.lower()] for n in nombres if n.lower() in perfiles]
             total = sum(cat.valor(p, reg) for p in miembros)
@@ -1430,29 +1475,132 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
         titulo = cat.titulo + (f" de {reg.capitalize()}" if reg else "")
         e = discord.Embed(title=f"🛡️ Ranking de teams — {titulo}", color=COLOR)
         e.description = "\n".join(
-            f"{medallas[i] if i < 3 else f'**{i + 1}.**'} **{t.titulo}** — {cat.formato(total)}"
+            f"{medallas[i] if i < 3 else f'**{i + 1}.**'} **{esc(t.titulo)}** — {cat.formato(total)}"
             f" · {n} miembro{'s' if n != 1 else ''}"
             + (f" · MVP: {esc(mejor.nombre)}" if mejor and cat.valor(mejor, reg) > 0 else "")
-            for i, (total, t, n, mejor) in enumerate(filas))
+            for i, (total, t, n, mejor) in enumerate(filas))[:4000]
         e.set_footer(text="Suma de los miembros de cada team en Minecraft")
         await inter.followup.send(embed=e)
 
     tree.add_command(grupo)
 
     # ---- gestión de teams para admins (dentro de /admin)
+    @admin.command(name="team-crear", description="Crea un team en Minecraft con el nombre, color y prefijo que quieras")
+    @app_commands.describe(nombre="Nombre del team (el que quieras)", color="Color del nombre en el juego",
+                           prefijo="Lo que sale delante del nombre del jugador (por defecto [Nombre]; 'ninguno' = sin prefijo)",
+                           fuego_amigo="¿Los del mismo team se pueden hacer daño? (por defecto no)")
+    @app_commands.choices(color=opciones_color)
+    async def adm_team_crear(inter: discord.Interaction, nombre: app_commands.Range[str, 1, 32],
+                             color: app_commands.Choice[str] | None = None, prefijo: str | None = None,
+                             fuego_amigo: bool = False):
+        if not bot.es_admin(inter.user):
+            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+            return
+        nombre = " ".join(nombre.split())
+        teams = await bot.teams_mc(forzar=True)
+        if any(t.titulo.lower() == nombre.lower() for t in teams.values()):
+            await inter.response.send_message(f"Ya hay un team llamado **{esc(nombre)}**.", ephemeral=True)
+            return
+        await inter.response.defer(ephemeral=True)
+        tid = id_para(nombre, teams)
+        c = color.value if color else "white"
+        pre = "" if (prefijo or "").strip().lower() in ("ninguno", "-", "no") else (
+            " ".join(prefijo.split())[:32] + " " if prefijo else f"[{nombre}] ")
+        for cmd in comandos_crear(tid, nombre, c, pre, fuego_amigo):
+            await bot.rcon.comando(cmd)
+        await bot.guardar_y_releer_teams()
+        await inter.followup.send(
+            f"✅ Team **{esc(nombre)}** creado (nombre interno `{tid}`) · color {COLORES.get(c, c)} · "
+            f"prefijo `{pre or '—'}` · fuego amigo {'sí' if fuego_amigo else 'no'}.\n"
+            f"Mete jugadores con `/admin team`.", ephemeral=True)
+        await bot.enviar(bot.canal_registro, embed=discord.Embed(
+            description=f"🛡️ **{inter.user}** creó el team **{esc(nombre)}** (`{tid}`)", color=0x555555,
+            timestamp=datetime.now(timezone.utc)))
+
+    @admin.command(name="team-editar", description="Cambia el nombre, color, prefijo o fuego amigo de un team")
+    @app_commands.describe(team="Team", nombre="Nombre nuevo", color="Color nuevo",
+                           prefijo="Prefijo nuevo ('ninguno' = sin prefijo)", fuego_amigo="Fuego amigo")
+    @app_commands.autocomplete(team=ac_team)
+    @app_commands.choices(color=opciones_color)
+    async def adm_team_editar(inter: discord.Interaction, team: str, nombre: app_commands.Range[str, 1, 32] | None = None,
+                              color: app_commands.Choice[str] | None = None, prefijo: str | None = None,
+                              fuego_amigo: bool | None = None):
+        if not bot.es_admin(inter.user):
+            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+            return
+        t = await team_o_error(inter, team)
+        if not t:
+            return
+        pre = None if prefijo is None else (
+            "" if prefijo.strip().lower() in ("ninguno", "-", "no") else " ".join(prefijo.split())[:32] + " ")
+        nuevo_nombre = " ".join(nombre.split()) if nombre else None
+        cmds = comandos_editar(t.id, nuevo_nombre, color.value if color else None, pre, fuego_amigo, t.color)
+        # Si solo cambia el color, se repintan también el nombre y el prefijo
+        if color and nuevo_nombre is None:
+            cmds += comandos_editar(t.id, nombre=t.titulo, color_actual=color.value)
+        if color and pre is None and t.prefijo:
+            cmds += comandos_editar(t.id, prefijo=t.prefijo, color_actual=color.value)
+        if not cmds:
+            await inter.response.send_message("No has cambiado nada.", ephemeral=True)
+            return
+        await inter.response.defer(ephemeral=True)
+        for cmd in cmds:
+            await bot.rcon.comando(cmd)
+        nuevo = (await bot.guardar_y_releer_teams()).get(t.id, t)
+        await inter.followup.send(
+            f"✅ Team **{esc(nuevo.titulo)}** actualizado · color {COLORES.get(nuevo.color, nuevo.color)} · "
+            f"prefijo `{nuevo.prefijo or '—'}` · fuego amigo {'sí' if nuevo.fuego_amigo else 'no'}.", ephemeral=True)
+
+    class ConfirmarBorrado(discord.ui.View):
+        def __init__(self, autor_id: int, t: Team):
+            super().__init__(timeout=30)
+            self.autor_id, self.t = autor_id, t
+
+        async def interaction_check(self, i: discord.Interaction) -> bool:
+            return i.user.id == self.autor_id
+
+        @discord.ui.button(label="Sí, borrar", style=discord.ButtonStyle.danger)
+        async def si(self, i: discord.Interaction, _):
+            self.stop()
+            await bot.rcon.comando(f"team remove {self.t.id}")
+            await i.response.edit_message(content=f"🗑️ Team **{esc(self.t.titulo)}** borrado.", view=None)
+            await bot.guardar_y_releer_teams()
+            await bot.enviar(bot.canal_registro, embed=discord.Embed(
+                description=f"🛡️ **{i.user}** borró el team **{esc(self.t.titulo)}** (`{self.t.id}`)", color=0x555555,
+                timestamp=datetime.now(timezone.utc)))
+
+        @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+        async def no(self, i: discord.Interaction, _):
+            self.stop()
+            await i.response.edit_message(content="No se ha borrado nada.", view=None)
+
+    @admin.command(name="team-borrar", description="Borra un team de Minecraft (sus miembros se quedan sin team)")
+    @app_commands.describe(team="Team a borrar")
+    @app_commands.autocomplete(team=ac_team)
+    async def adm_team_borrar(inter: discord.Interaction, team: str):
+        if not bot.es_admin(inter.user):
+            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+            return
+        t = await team_o_error(inter, team)
+        if not t:
+            return
+        await inter.response.send_message(
+            f"⚠️ ¿Borrar el team **{esc(t.titulo)}**? Sus miembros se quedarán sin team.",
+            view=ConfirmarBorrado(inter.user.id, t), ephemeral=True)
+
     @admin.command(name="team", description="Mete a un jugador en un team de Minecraft (o lo saca)")
     @app_commands.describe(jugador="Jugador de Minecraft", team="Team (o 'Sin team' para sacarlo)")
-    @app_commands.choices(team=opciones_team + [app_commands.Choice(name="Sin team", value="-")])
-    @app_commands.autocomplete(jugador=ac_jugador)
-    async def adm_team(inter: discord.Interaction, jugador: str, team: app_commands.Choice[str]):
+    @app_commands.autocomplete(jugador=ac_jugador, team=ac_team_o_ninguno)
+    async def adm_team(inter: discord.Interaction, jugador: str, team: str):
         if not RE_NOMBRE_MC.match(jugador):
             await inter.response.send_message("Ese nombre de jugador no es válido.", ephemeral=True)
             return
-        if team.value == "-":
+        if team == "-":
             await ejecutar_admin(bot, inter, f"team leave {jugador}", f"**{esc(jugador)}** ya no está en ningún team")
-        else:
-            await ejecutar_admin(bot, inter, f"team join {team.value} {jugador}",
-                                 f"**{esc(jugador)}** → **{bot.teams[team.value].titulo}**")
+            return
+        t = await team_o_error(inter, team)
+        if t:
+            await ejecutar_admin(bot, inter, f"team join {t.id} {jugador}", f"**{esc(jugador)}** → **{esc(t.titulo)}**")
 
 
 async def ejecutar_admin(bot: CobbleBot, inter: discord.Interaction, comando: str, que: str):

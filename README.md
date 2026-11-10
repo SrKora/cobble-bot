@@ -215,7 +215,7 @@ Al escribir un **jugador** salen sugerencias; los conectados aparecen arriba con
 | `/estado` | Si el servidor está online y cuánta gente hay |
 | `/jugadores` | Quién está conectado |
 
-### Teams (si hay teams en `config.toml`)
+### Teams
 
 | Comando | Qué hace |
 |---|---|
@@ -223,7 +223,7 @@ Al escribir un **jugador** salen sugerencias; los conectados aparecen arriba con
 | `/team jugador nombre` | En qué team está un jugador |
 | `/team ranking categoría [región]` | Qué team va ganando: suma de sus miembros (medallas, capturas, horas…) y el MVP de cada uno |
 
-Los teams existen **solo en Minecraft** (nombre con su color y prefijo en el chat y en la lista de jugadores; sin fuego amigo si así está configurado). Para entrar en uno, un admin usa `/admin team`.
+Los teams existen **solo en Minecraft** (nombre con su color y prefijo en el chat y en la lista de jugadores). Los crea un admin con el nombre que quiera (`/admin team-crear`) y mete a cada jugador con `/admin team`.
 
 ### Regalos (roles de `DISCORD_ROLES_REGALOS` y admins)
 
@@ -263,7 +263,10 @@ Los teams existen **solo en Minecraft** (nombre con su color y prefijo en el cha
 | `/admin guardar` | Guarda el mundo |
 | `/admin reiniciar [aviso]` | Avisa a los jugadores (chat y título en pantalla), espera y reinicia. **Pide confirmación con un botón.** Requiere que algo vuelva a arrancar el servidor al pararse (en Docker: `restart: unless-stopped`) |
 | `/admin mensaje` | Mensajes en el juego (ver abajo) |
-| `/admin team jugador team` | Mete a un jugador en un team de Minecraft, lo cambia o lo saca (`Sin team`) |
+| `/admin team-crear nombre [color] [prefijo] [fuego_amigo]` | Crea un team con el **nombre que quieras**. El prefijo por defecto es `[Nombre]` (pon `ninguno` para no tener) |
+| `/admin team-editar team …` | Cambia el nombre, el color, el prefijo o el fuego amigo de un team |
+| `/admin team-borrar team` | Borra un team (pide confirmación; sus miembros se quedan sin team) |
+| `/admin team jugador team` | Mete a un jugador en un team, lo cambia o lo saca (`Sin team`). No hace falta que esté conectado |
 | `/comando texto` | Cualquier comando de la lista `permitidos` de `config.toml`, con sugerencias |
 | `/actualizar` | Guarda el mundo y recarga los datos ya |
 | `/diagnostico jugador` | Qué encuentra el bot de un jugador + IDs de sus logros |
@@ -300,13 +303,13 @@ Si una variable está en el `.env`, manda sobre `config.toml`. Tras cambiar cual
 | `[comandos]` | Comandos permitidos en `/comando` (no pongas `"*"`) |
 | `[cobbleverse]` | Símbolo y carpeta del dinero, y qué logros cuentan como medallas y ligas |
 | `[rankings_cobblemon]` | Rankings extra de `/top` a partir de estadísticas de Cobblemon |
-| `[[teams]]` | Un bloque por team: id en Minecraft, nombre, color, prefijo, emoji y fuego amigo. Sin bloques, no hay `/team` |
 
 ### Cómo funcionan los teams
 
-- **Manda Minecraft.** Los teams y sus miembros viven en el mundo, como cualquier team del juego. El bot los crea con comandos (`/team add`, colores, prefijo…) al arrancar y cada vez que el servidor vuelve a estar en pie.
-- Desde Discord un admin mete o saca jugadores (`/admin team`); dentro del juego vale igual con `/team join` (operadores). Lo que se haga en un sitio se ve en el otro, porque Discord lo lee siempre del servidor.
-- El bot **no guarda nada** ni necesita roles de Discord: no hace falta vincular cuentas.
+- **Manda Minecraft.** Los teams y sus miembros viven en el mundo, como cualquier team del juego. No se definen en ningún archivo: se crean desde Discord (`/admin team-crear`) o dentro del juego con `/team add` (operadores), y el bot enseña todos.
+- El bot los **lee** del mundo (`world/data/scoreboard.dat`, solo lectura) y pregunta los miembros en directo al servidor. Lo que se haga en Discord o en el juego se ve en los dos sitios.
+- Al crear, editar o borrar un team desde Discord, el bot fuerza un guardado del mundo para que el cambio se vea al momento. Un team creado **dentro del juego** aparece en Discord en cuanto el servidor guarda (cada pocos minutos, o con `/actualizar`).
+- El bot **no guarda nada** ni necesita roles de Discord.
 
 ---
 

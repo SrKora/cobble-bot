@@ -14,7 +14,7 @@ from bot.archivos import ArchivosLocales
 from bot.main import CobbleBot, embed_equipo, embed_medallas, embed_perfil, parsear_list
 from bot.perfiles import Perfiles, dinero_de_estructura, extraer_pokemon
 from bot.rcon import RconClient, RconError
-from bot.teams import cargar_teams, comandos_crear, parsear_miembros
+from bot.teams import comandos_crear, comandos_editar, id_para, leer_scoreboard, parsear_miembros
 
 PASS = "secreta"
 ANA = "11111111-1111-1111-1111-111111111111"
@@ -169,14 +169,23 @@ async def main():
         assert bot.comando_permitido("/whitelist add Pepe") and not bot.comando_permitido("stop")
         print("Embeds y diagnóstico OK")
 
-        # --- Teams: config, comandos de Minecraft y lectura de miembros
-        teams = cargar_teams({"teams": [
-            {"id": "rojo", "nombre": "Equipo Rojo", "color": "red", "prefijo": "[R] "},
-            {"id": "mal id!", "rol": "x"},          # id no válido: se ignora
-        ]})
-        assert list(teams) == ["rojo"]
-        cmds = comandos_crear(teams["rojo"])
-        assert cmds[0] == 'team add rojo {"text": "Equipo Rojo", "color": "red"}' and "friendlyFire false" in cmds[4]
+        # --- Teams: lectura del scoreboard del mundo, nombres internos, comandos y miembros
+        sb = nbt.cargar(nbt.guardar({"DataVersion": 3955, "data": {"Teams": [
+            {"Name": "rojo", "DisplayName": '{"text":"Equipo Rojo","color":"red"}', "TeamColor": "red",
+             "MemberNamePrefix": '{"text":"[R] ","color":"red"}', "AllowFriendlyFire": 0, "Players": ["Ana"]},
+            {"Name": "azul", "DisplayName": '["",{"text":"Los "},{"text":"Azules","bold":true}]', "TeamColor": "blue",
+             "MemberNamePrefix": '""', "AllowFriendlyFire": 1, "Players": []},
+        ]}}))
+        teams = leer_scoreboard(sb)
+        assert [t.titulo for t in teams.values()] == ["Equipo Rojo", "Los Azules"]          # orden por nombre
+        assert teams["rojo"].prefijo == "[R] " and not teams["rojo"].fuego_amigo and teams["azul"].fuego_amigo
+        assert teams["rojo"].miembros_guardados == ("Ana",)
+        assert id_para("Los Dragones Ñ!", teams) == "los_dragones_n"
+        assert id_para("Rojo", {"rojo": 1}) == "rojo_2"                                       # no pisa uno existente
+        cmds = comandos_crear("rojo", "Equipo Rojo", "red", "[R] ", False)
+        assert cmds[0] == 'team add rojo {"text": "Equipo Rojo", "color": "red"}'
+        assert "team modify rojo friendlyFire false" in cmds and "team modify rojo color red" in cmds
+        assert comandos_editar("rojo", fuego_amigo=True) == ["team modify rojo friendlyFire true"]
         assert parsear_miembros("Team [Equipo Rojo] has 2 member(s): Ana, Luis") == ["Ana", "Luis"]
         assert parsear_miembros("There are no members on team [Equipo Rojo]") == []
         print("Teams OK")
