@@ -208,6 +208,21 @@ async def main():
         assert parsear_miembros("There are no members on team [Equipo Rojo]") == []
         print("Teams OK")
 
+        # --- Ligas: la primera vez solo apunta; luego avisa de las nuevas una sola vez
+        from types import SimpleNamespace as NS
+        from bot.ligas import EstadoLigas
+        from bot.perfiles import Logro
+        kanto = Logro("cobbleverse:trainer/kanto/defeat_champion_blue", "kanto")
+        johto = Logro("cobbleverse:trainer/johto/defeat_champion_lance", "johto")
+        el = EstadoLigas(Path(tmp) / "datos")
+        assert el.nuevas([NS(uuid="u1", nombre="Ana", ligas=[kanto]), NS(uuid="u2", nombre="Luis", ligas=[])]) == []
+        nuevas = el.nuevas([NS(uuid="u1", nombre="Ana", ligas=[kanto, johto])])
+        assert [(p.nombre, l.region) for p, l in nuevas] == [("Ana", "johto")]
+        assert el.nuevas([NS(uuid="u1", nombre="Ana", ligas=[kanto, johto])]) == []   # no se repite
+        el.poner_canal(123)
+        assert EstadoLigas(Path(tmp) / "datos").canal == 123
+        print("Ligas OK")
+
     srv.close()
     await srv.wait_closed()
 

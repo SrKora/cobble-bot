@@ -3,6 +3,7 @@ import base64
 import io
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -21,6 +22,7 @@ from .archivos import crear_fuente
 from .cobblemon_datos import (NATURALEZAS, RE_EXTRA, RE_ID, RE_JAR_COBBLEMON, RE_MOTE, TIPOS_TERA,
                               DatosCobblemon, parsear_stats, resumen_stats)
 from .entorno import aplicar_entorno, cargar_dotenv
+from .ligas import EstadoLigas
 from .objetos_datos import Mod, buscar, catalogo_de_jars
 from .texto_mc import COLORES, a_json, componentes, texto_plano
 from .perfiles import NOMBRES_COBBLEMON, REGIONES, Perfiles, Perfil, bonito
@@ -149,6 +151,8 @@ class CobbleBot(discord.Client):
         # Teams: viven solo en Minecraft; se leen del mundo (scoreboard.dat) y se cambian por comandos
         self.carpeta_mundo = cfg.get("archivos", {}).get("carpeta_mundo", "world").strip("/")
         self._teams_cache: tuple[float, dict[str, Team]] | None = None
+        # Ligas completadas: anuncio en un canal (lo que recuerda va en la carpeta de datos del bot)
+        self.ligas = EstadoLigas(os.environ.get("BOT_DATOS", "datos"))
         self._reinicio_por: str | None = None     # quién pidió el reinicio con /admin reiniciar
         self._visto_caido = False                 # tras pedir un reinicio, hay que verlo caer antes de darlo por levantado
         self.intervalo_monitor = int(cfg.get("monitor", {}).get("intervalo_segundos", 30))
@@ -473,7 +477,28 @@ class CobbleBot(discord.Client):
             except RconError:
                 pass
         await asyncio.sleep(3)
-        return len(await self.perfiles.todos(forzar=True))
+        perfiles = await self.perfiles.todos(forzar=True)
+        try:
+            await self.revisar_ligas(perfiles)
+        except Exception:
+            log.exception("Error revisando las ligas")
+        return len(perfiles)
+
+    async def revisar_ligas(self, perfiles):
+        """Anuncia en el canal de ligas las ligas que alguien acaba de completar."""
+        canal = self.ligas.canal or self.canal_avisos
+        for p, liga in self.ligas.nuevas(perfiles):
+            region = (liga.region or "").capitalize()
+            e = discord.Embed(title=f"🏆 ¡Liga{' de ' + region if region else ''} completada!", color=0xF1C40F,
+                              timestamp=datetime.now(timezone.utc))
+            e.description = (f"**{esc(p.nombre)}** ha vencido a **{liga.nombre}**"
+                             + (f" y es campeón de **{region}**." if region else "."))
+            e.set_thumbnail(url=url_avatar(p))
+            log.info("Liga completada: %s -> %s", p.nombre, liga.id)
+            try:
+                await self.enviar(canal, embed=e)
+            except discord.HTTPException as ex:
+                log.warning("No he podido anunciar la liga en Discord: %s", ex)
 
     @tasks.loop(minutes=5)
     async def auto_actualizar(self):
@@ -610,6 +635,7 @@ def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.E
             "`&6` dorado, `&c` rojo, `&a` verde, `&l` negrita…\n"
             "`/comando texto` — cualquier comando permitido (con lista de sugerencias)\n"
             "`/admin team-crear` · `team-editar` · `team-borrar` — teams con el nombre, color y [etiqueta] que quieras\n"
+            "`/admin ligas [canal]` — canal donde se anuncia cada liga completada\n"
             "`/admin team jugador team` — mete a un jugador en un team (o lo saca)\n"
             "`/actualizar` — guarda el mundo y recarga los datos al momento\n"
             "`/diagnostico jugador` — qué archivos y logros encuentra el bot (para ajustar la config)"))
@@ -1143,6 +1169,7 @@ def registrar_comandos(bot: CobbleBot):
             view=ConfirmarReinicio(inter.user.id, aviso), ephemeral=bot.privado)
 
     registrar_teams(bot, tree, admin, ac_jugador, ac_categoria)
+    registrar_ligas(bot, admin)
 
     tree.add_command(admin)
 
@@ -1468,6 +1495,28 @@ def main():
     if not token or token.startswith("PEGA_"):
         sys.exit("Falta el token del bot: ponlo en DISCORD_TOKEN dentro del archivo .env")
     CobbleBot(cfg).run(token, log_handler=None)
+
+
+# =================================================================== ligas
+def registrar_ligas(bot: CobbleBot, admin: app_commands.Group):
+    @admin.command(name="ligas", description="Canal donde se anuncia cada liga completada")
+    @app_commands.describe(canal="Canal donde anunciar cada liga completada (vacío = ver cómo está)")
+    async def adm_ligas(inter: discord.Interaction, canal: discord.TextChannel | None = None):
+        if not bot.es_admin(inter.user) or not inter.guild:
+            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+            return
+        aviso = ""
+        if canal:
+            permisos = canal.permissions_for(inter.guild.me)
+            if not (permisos.view_channel and permisos.send_messages and permisos.embed_links):
+                aviso = (f"\n⚠️ No puedo escribir en {canal.mention}: dame permiso para ver el canal, enviar "
+                         "mensajes e insertar enlaces.")
+            bot.ligas.poner_canal(canal.id)
+        actual = bot.ligas.canal or bot.canal_avisos
+        await inter.response.send_message(
+            f"📢 Canal de anuncios de ligas: {f'<#{actual}>' if actual else '— (elige uno con `canal`)'}{aviso}\n"
+            "El aviso sale unos minutos después de completar la liga (cuando el bot relee los datos; "
+            "`/actualizar` lo hace al momento).", ephemeral=bot.privado)
 
 
 # =================================================================== teams

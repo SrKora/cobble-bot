@@ -267,6 +267,7 @@ Los teams existen **solo en Minecraft** (nombre con su color y prefijo en el cha
 | `/admin team-crear nombre [color] [etiqueta] [fuego_amigo]` | Crea un team con el **nombre que quieras**. En el chat, la lista de jugadores y encima de la cabeza sale `[Etiqueta] Jugador` (por defecto la etiqueta es el nombre del team) |
 | `/admin team-editar team …` | Cambia el nombre, el color, la etiqueta `[ ]` o el fuego amigo de un team |
 | `/admin team-borrar team` | Borra un team (pide confirmación; sus miembros se quedan sin team) |
+| `/admin ligas [canal]` | Canal donde se anuncia cada **liga completada** (vencer al campeón de una región), con la cara del jugador. Cada liga se anuncia una sola vez |
 | `/admin team jugador team` | Mete a un jugador en un team, lo cambia o lo saca (`Sin team`). No hace falta que esté conectado |
 | `/comando texto` | Cualquier comando de la lista `permitidos` de `config.toml`, con sugerencias |
 | `/actualizar` | Guarda el mundo y recarga los datos ya |
