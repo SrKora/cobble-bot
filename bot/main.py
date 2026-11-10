@@ -600,46 +600,59 @@ def embed_medallas(p: Perfil, region: str | None) -> discord.Embed:
 def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.Embed:
     e = discord.Embed(
         title="📖 Comandos de CobbleBOT",
-        description="Al escribir el jugador te salen sugerencias (🟢 = conectado ahora).",
+        description=("Al escribir un jugador te salen sugerencias (🟢 = conectado ahora). Para consultar datos puede "
+                     "estar desconectado; para recibir regalos o acciones de admin tiene que estar conectado."),
         color=COLOR)
-    e.add_field(name="🖥️ Servidor", inline=False, value=(
-        "`/estado` — si el servidor está online y cuánta gente hay\n"
-        "`/jugadores` — quién está conectado ahora mismo"))
-    e.add_field(name="👤 Jugadores", inline=False, value=(
-        "`/stats jugador` — ficha completa: horas, dinero, medallas, equipo, colección…\n"
-        "`/equipo jugador` — los 6 Pokémon del equipo y resumen del PC\n"
-        "`/medallas jugador [región]` — medallas por región y ligas conseguidas"))
+
+    def campo(nombre: str, lineas: list[str]):
+        e.add_field(name=nombre, inline=False, value="\n".join(lineas)[:1024])
+
+    campo("🖥️ Servidor", [
+        "`/estado` — si el servidor está online y cuánta gente hay",
+        "`/jugadores` — quién está conectado ahora mismo"])
+    campo("👤 Jugadores", [
+        "`/stats jugador` — ficha completa: horas, dinero, medallas, ligas, equipo, colección…",
+        "`/equipo jugador` — los 6 Pokémon del equipo y resumen del PC",
+        "`/medallas jugador [región]` — medallas por región y ligas conseguidas"])
     cats = ", ".join(f"`{k}`" for k in bot.categorias)
-    e.add_field(name="🏆 Rankings", inline=False, value=(
-        "`/top categoría [región] [cantidad]` — ranking de jugadores. "
-        "La región solo cuenta para medallas y ligas.\n"
-        f"Categorías: {cats}")[:1024])
-    e.add_field(name="🛡️ Teams", inline=False, value=(
-        "`/team info [team]` — miembros de cada team (🟢 = conectado)\n"
-        "`/team jugador nombre` — en qué team está un jugador\n"
-        "`/team ranking categoría` — competición entre teams\n"
-        "Para entrar en un team, pídeselo a un admin."))
+    campo("🏆 Rankings", [
+        "`/top categoría [región] [cantidad]` — ranking de jugadores (la región solo cuenta para medallas y ligas)",
+        f"Categorías: {cats}"])
+    campo("🛡️ Teams", [
+        "`/team info [team]` — miembros de cada team (🟢 = conectado)",
+        "`/team jugador nombre` — en qué team está un jugador",
+        "`/team ranking categoría` — qué team va ganando",
+        "Para entrar en un team, pídeselo a un admin. En el juego: `/teammsg mensaje` (o `/tm`) habla solo con tu team"])
+    canal = bot.ligas.canal or bot.canal_avisos
+    campo("🏅 Ligas", [
+        "Al vencer al campeón de una región, el bot lo anuncia" + (f" en <#{canal}>" if canal else "")
+        + " (tarda unos minutos)."])
     if regalar:
-        e.add_field(name="🎁 Regalos", inline=False, value=(
+        campo("🎁 Regalos", [
             "`/dar pokemon jugador especie […]` — da un Pokémon. Opcional: nivel, shiny, sexo, naturaleza, "
             "habilidad, IVs, EVs, movimientos, objeto, Poké Ball, mote, amistad, forma, teratipo, Dinamax, "
-            "Gigamax, tamaño…\n"
-            "`/dar dinero jugador cantidad` — da CobbleDollars\n"
-            "`/dar objeto jugador mod objeto [cantidad]` — da objetos: elige el mod y busca el objeto por nombre\n"
-            "El jugador tiene que estar conectado. Todo queda registrado."))
+            "Gigamax, tamaño…",
+            "`/dar dinero jugador cantidad` — da CobbleDollars",
+            "`/dar objeto jugador mod objeto [cantidad]` — elige el mod y busca el objeto por su nombre",
+            "El jugador tiene que estar conectado. Todo queda registrado."])
     if admin:
-        e.add_field(name="🔧 Admins", inline=False, value=(
-            "`/admin …` — gestión del servidor: expulsar, banear, whitelist, operadores (con niveles), modo de juego, teletransporte, "
-            "hora, clima, dificultad, curar, experiencia, guardar y reiniciar\n"
-            "`/admin mensaje` — mensajes en el juego (chat, título o encima de la hotbar) con colores: "
-            "`&6` dorado, `&c` rojo, `&a` verde, `&l` negrita…\n"
-            "`/comando texto` — cualquier comando permitido (con lista de sugerencias)\n"
-            "`/admin team-crear` · `team-editar` · `team-borrar` — teams con el nombre, color y [etiqueta] que quieras\n"
-            "`/admin ligas [canal]` — canal donde se anuncia cada liga completada\n"
-            "`/admin team jugador team` — mete a un jugador en un team (o lo saca)\n"
-            "`/actualizar` — guarda el mundo y recarga los datos al momento\n"
-            "`/diagnostico jugador` — qué archivos y logros encuentra el bot (para ajustar la config)"))
-    e.set_footer(text="Los datos se actualizan cuando el servidor guarda el mundo")
+        campo("🔧 Admins · servidor", [
+            "`/admin expulsar` · `banear`⚠️ · `desbanear` · `baneados` — moderación",
+            "`/admin whitelist` (desactivar⚠️) · `op` (dar⚠️) · `operadores` — acceso y permisos",
+            "`/admin modo` · `teletransportar` · `curar` · `experiencia` — jugadores",
+            "`/admin hora` · `clima` · `dificultad` · `guardar` · `reiniciar`⚠️ — mundo y servidor",
+            "`/admin mensaje` — en el chat, como título o encima de la hotbar, con colores "
+            "(`&6` dorado, `&c` rojo, `&a` verde, `&l` negrita…)",
+            "`/comando texto` — cualquier comando permitido (con sugerencias)",
+            "`/actualizar` — guarda el mundo y recarga los datos ya · `/diagnostico jugador` — qué encuentra el bot",
+            "⚠️ = pide confirmar con un botón antes de hacerlo"])
+        campo("🛡️ Admins · teams y ligas", [
+            "`/admin team-crear nombre [color] [etiqueta] [fuego_amigo]` — team con el nombre que quieras",
+            "`/admin team-editar` · `team-borrar`⚠️ — cambiar o borrar un team",
+            "`/admin team jugador team` — meter, cambiar o sacar a un jugador de un team",
+            "`/admin ligas [canal]` — canal donde se anuncia cada liga completada"])
+    e.set_footer(text=("Las respuestas de los comandos las ve todo el canal (los errores y /help, solo tú). "
+                       if not bot.privado else "") + "Los datos se actualizan cuando el servidor guarda el mundo.")
     return e
 
 
