@@ -14,9 +14,11 @@ services:
     env_file: .env
     environment:
       MC_CARPETA_SERVIDOR: /data      # dentro del contenedor el servidor siempre está en /data
+      BOT_DATOS: /datos               # lo que recuerda el bot (vínculos y teams): carpeta ./datos
     volumes:
       - ${MC_DATOS:?Falta MC_DATOS en el .env (carpeta data del servidor)}:/data:ro
       - ./config.toml:/config/config.toml:ro
+      - ./datos:/datos                # carpeta del BOT (no del servidor): única con escritura
     networks:
       - servidor
     restart: unless-stopped

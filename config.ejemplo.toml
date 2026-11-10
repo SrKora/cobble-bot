@@ -105,3 +105,34 @@ shinies_capturados = "cobblemon:shinies_captured"
 combates = "cobblemon:battles_won"
 evoluciones = "cobblemon:evolved"
 huevos = "cobblemon:hatched"
+
+# --- Teams ---
+# Equipos de Minecraft (nombre con color y prefijo en el chat y en la lista de jugadores)
+# sincronizados con roles de Discord. Un bloque [[teams]] por equipo; sin bloques no hay /team.
+#   id          = nombre del team dentro de Minecraft (minúsculas, sin espacios)
+#   nombre      = nombre que se ve
+#   rol         = nombre EXACTO del rol de Discord (o su ID)
+#   color       = color en el juego: black, dark_blue, dark_green, dark_aqua, dark_red, dark_purple,
+#                 gold, gray, dark_gray, blue, green, aqua, red, light_purple, yellow, white
+#   prefijo     = lo que sale delante del nombre del jugador
+#   emoji       = (opcional) para Discord
+#   fuego_amigo = si los del mismo team se pueden hacer daño
+# El bot necesita el permiso "Gestionar roles" y que su rol esté por encima de los roles de los teams.
+#
+# [[teams]]
+# id = "rojo"
+# nombre = "Equipo Rojo"
+# rol = "Equipo Rojo"
+# color = "red"
+# prefijo = "[Rojo] "
+# emoji = "🔴"
+# fuego_amigo = false
+#
+# [[teams]]
+# id = "azul"
+# nombre = "Equipo Azul"
+# rol = "Equipo Azul"
+# color = "blue"
+# prefijo = "[Azul] "
+# emoji = "🔵"
+# fuego_amigo = false

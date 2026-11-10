@@ -4,6 +4,7 @@ Bot de Discord para servidores de Minecraft con **Cobblemon**, pensado para el m
 
 - 📊 **Para todos:** fichas de jugador, equipos, medallas por región y rankings.
 - 🎁 **Para tu equipo:** regala Pokémon (con IVs, EVs, movimientos…), dinero y objetos desde Discord.
+- 🛡️ **Teams:** equipos con color y prefijo en el juego, sincronizados con roles de Discord, y ranking entre teams.
 - 🔧 **Para los admins:** gestiona el servidor (expulsar, banear, whitelist, clima, mensajes en pantalla, reinicios…) sin entrar al juego.
 - 🟢 **Avisos:** el bot avisa en un canal cuando el servidor se cae, se reinicia y **en cuanto se puede volver a entrar**.
 
@@ -58,6 +59,8 @@ https://discord.com/oauth2/authorize?client_id=TU_APPLICATION_ID&scope=bot+appli
 
 Elige tu servidor y acepta. Los permisos que pide (`52224`) son los mínimos: **Ver canales, Enviar mensajes, Insertar enlaces y Adjuntar archivos** (el último, para el `.txt` de `/diagnostico`).
 
+**Si vas a usar teams**, invítalo con `permissions=268487680` (lo mismo + **Gestionar roles**) y después, en **Ajustes del servidor → Roles**, arrastra el rol del bot **por encima de los roles de los teams** (Discord solo deja a un bot poner roles que estén por debajo del suyo).
+
 ### 2.3 Sacar los IDs que necesita el bot
 
 En Discord: **Ajustes de usuario → Avanzado → Modo desarrollador** (actívalo). Ahora con **clic derecho → Copiar ID** puedes copiar:
@@ -68,6 +71,7 @@ En Discord: **Ajustes de usuario → Avanzado → Modo desarrollador** (actíval
 | ID de un **canal de estado** | Clic derecho en el canal | `DISCORD_CANAL_ESTADO`: avisos de servidor caído / reiniciando / online |
 | ID de un **canal de registro** (privado) | Clic derecho en el canal | `DISCORD_CANAL_REGISTRO`: queda apuntado quién usa `/dar`, `/admin` y `/comando` |
 | ID de los **roles** de admin y de regalos | Ajustes del servidor → Roles → clic derecho | `DISCORD_ROLES_ADMIN`, `DISCORD_ROLES_REGALOS` |
+| **Roles de los teams** (opcional) | Créalos en Ajustes del servidor → Roles | En `config.toml`, sección `[[teams]]` (por nombre exacto o ID) |
 
 **Canales recomendados:**
 - `#estado-del-servidor`: público, de solo lectura para los miembros. Ahí avisa el bot.
@@ -214,6 +218,18 @@ Al escribir un **jugador** salen sugerencias; los conectados aparecen arriba con
 | `/estado` | Si el servidor está online y cuánta gente hay |
 | `/jugadores` | Quién está conectado |
 
+### Teams (si hay teams en `config.toml`)
+
+| Comando | Qué hace |
+|---|---|
+| `/team vincular jugador` | Une tu Discord con tu jugador de Minecraft. Tienes que estar conectado: te llega un **código al chat del juego** |
+| `/team confirmar codigo` | Termina la vinculación con ese código (caduca en 5 minutos) |
+| `/team unirse team` | Elige tu team. **Solo la primera vez**: para cambiarte, pídeselo a un admin |
+| `/team info [team]` | Miembros de cada team |
+| `/team ranking categoría [región]` | Qué team va ganando: suma de sus miembros (medallas, capturas, horas…) y el MVP de cada uno |
+
+Al unirte, el bot te pone el **rol de Discord** del team y te mete en el **team de Minecraft** (nombre con su color y prefijo en el chat y en la lista de jugadores; sin fuego amigo si así está configurado).
+
 ### Regalos (roles de `DISCORD_ROLES_REGALOS` y admins)
 
 **`/dar pokemon jugador especie […]`**: solo jugador y especie son obligatorios. Las listas de especies, habilidades, movimientos, formas y Poké Balls salen del Cobblemon de tu servidor, así que solo se puede elegir lo que existe.
@@ -252,6 +268,8 @@ Al escribir un **jugador** salen sugerencias; los conectados aparecen arriba con
 | `/admin guardar` | Guarda el mundo |
 | `/admin reiniciar [aviso]` | Avisa a los jugadores (chat y título en pantalla), espera y reinicia. **Pide confirmación con un botón.** Requiere que algo vuelva a arrancar el servidor al pararse (en Docker: `restart: unless-stopped`) |
 | `/admin mensaje` | Mensajes en el juego (ver abajo) |
+| `/admin team usuario team` | Pone, cambia o quita (`Sin team`) el team de alguien, en Discord y en Minecraft |
+| `/admin vincular usuario jugador` · `/admin desvincular usuario` | Vincular a mano (sin código) o deshacer un vínculo |
 | `/comando texto` | Cualquier comando de la lista `permitidos` de `config.toml`, con sugerencias |
 | `/actualizar` | Guarda el mundo y recarga los datos ya |
 | `/diagnostico jugador` | Qué encuentra el bot de un jugador + IDs de sus logros |
@@ -288,6 +306,14 @@ Si una variable está en el `.env`, manda sobre `config.toml`. Tras cambiar cual
 | `[comandos]` | Comandos permitidos en `/comando` (no pongas `"*"`) |
 | `[cobbleverse]` | Símbolo y carpeta del dinero, y qué logros cuentan como medallas y ligas |
 | `[rankings_cobblemon]` | Rankings extra de `/top` a partir de estadísticas de Cobblemon |
+| `[[teams]]` | Un bloque por team: id en Minecraft, nombre, rol de Discord, color, prefijo, emoji y fuego amigo. Sin bloques, no hay `/team` |
+
+### Cómo funcionan los teams
+
+- **Manda Discord.** Si un admin pone o quita a mano el rol de un team en Discord, el bot lo copia a Minecraft (lo comprueba cada 5 minutos). Si alguien cambia de team **dentro del juego** con `/team`, el bot lo deshace. Los jugadores sin vincular no se tocan.
+- Los teams de Minecraft los crea el propio bot con comandos (`/team add`, colores, prefijo…) al arrancar y cada vez que el servidor vuelve a estar en pie. Se guardan en el mundo como cualquier team.
+- Lo que el bot recuerda (quién es quién y en qué team está) va en su carpeta **`datos/`** (`datos/teams.json`), **no** en el servidor. Es la única carpeta en la que escribe. Contiene IDs de Discord y nombres de jugadores: no la compartas (está en `.gitignore`).
+- Si el bot no tiene permiso para gestionar roles, el jugador entra igualmente en el team de Minecraft y el rol de Discord se pone solo en cuanto se arreglen los permisos.
 
 ---
 
@@ -343,6 +369,8 @@ python -X utf8 tests/test_bot.py
 | "No encuentro a jugador" | Nunca ha entrado al servidor, o `MC_DATOS` / `MC_CARPETA_MUNDO` no apuntan bien. `/diagnostico` te dice qué encuentra |
 | Fichas vacías o con 0 horas | El servidor aún no ha guardado: `/actualizar` |
 | Medallas a 0 teniéndolas | Los IDs no cuadran con tu versión ([apartado 8](#medallas-y-ligas)) |
+| "No he podido cambiar el rol de Discord" | Al bot le falta **Gestionar roles** o su rol está **por debajo** de los roles de los teams (Ajustes del servidor → Roles) |
+| `/team vincular` dice que no estás conectado | Tienes que estar dentro del servidor para recibir el código en el chat |
 | No llegan avisos al canal | El bot no puede escribir ahí (Editar canal → Permisos) o el ID del canal está mal. Tras cambiar el `.env`: `./bot.sh reiniciar` |
 | Error de permisos al leer archivos | `UID_GID` no es el dueño de la carpeta del servidor (`ls -ln`) |
 | "La aplicación no ha respondido" | Mira `./bot.sh logs`. Si el bot dio un código de error, `./bot.sh error CODIGO` |

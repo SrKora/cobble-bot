@@ -11,3 +11,4 @@ tests/
 *.sh
 docker-compose.yml
 README.md
+datos/

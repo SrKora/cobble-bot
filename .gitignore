@@ -5,6 +5,9 @@
 config.toml
 *.bak
 
+# Datos del bot (vínculos Discord-Minecraft de los jugadores)
+datos/
+
 # Archivos del servidor de Minecraft (van aparte, no son del bot)
 servidor/
 data/
