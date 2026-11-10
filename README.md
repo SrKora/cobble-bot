@@ -242,8 +242,8 @@ Al escribir un **jugador** salen sugerencias; los conectados aparecen arriba con
 |---|---|
 | `/admin expulsar` · `banear` · `desbanear` · `baneados` | Moderación (con motivo opcional) |
 | `/admin whitelist` | Añadir, quitar, ver, activar o desactivar la whitelist |
-| `/admin op jugador nivel` | Nivel de operador, con lo que permite cada uno: **0** jugador normal · **1** construir en el spawn protegido · **2** trucos (`/gamemode`, `/give`, `/tp`, `/pokegive`…) · **3** moderador (+ `/kick`, `/ban`, `/whitelist`, `/op`) · **4** todo, incluido `/stop`. Los niveles 0 y 4 se aplican al momento; el 1, 2 y 3 al reiniciar el servidor (el bot ofrece reiniciar) |
-| `/admin operadores` | Quién es operador y con qué nivel |
+| `/admin op` | Dar operador (nivel 4: todo, incluido `/stop`) o quitarlo |
+| `/admin operadores` | Quién es operador, con qué nivel, y qué permite cada nivel: **0** jugador normal · **1** construir en el spawn protegido · **2** trucos (`/gamemode`, `/give`, `/tp`, `/pokegive`…) · **3** moderador (+ `/kick`, `/ban`, `/whitelist`, `/op`) · **4** todo. Los niveles 1-3 solo se pueden poner editando `ops.json` con el servidor parado (el bot no escribe en los archivos del servidor) |
 | `/admin modo` | Supervivencia, creativo, aventura o espectador |
 | `/admin teletransportar` | Lleva a un jugador hasta otro |
 | `/admin hora` · `clima` · `dificultad` | Mundo |
@@ -352,7 +352,7 @@ python -X utf8 tests/test_bot.py
 ## 11. Seguridad
 
 - El **token** y la **contraseña RCON** solo van en el `.env` (permisos `600`). `.gitignore` y `.dockerignore` impiden que acaben en git o en la imagen de Docker. Si el token se filtra: **Reset Token** en el portal de Discord.
-- El bot monta los archivos del servidor en **solo lectura**: nunca modifica el mundo directamente, todo lo hace mediante comandos del servidor. La única excepción es `ops.json` (se monta aparte con escritura), porque Minecraft no tiene comando para poner niveles de operador 1-3.
+- El bot monta los archivos del servidor en **solo lectura**: nunca modifica el mundo directamente, todo lo hace mediante comandos del servidor.
 - `/comando` solo admite los comandos de `permitidos`; `stop` no está (para eso está `/admin reiniciar`, con confirmación).
 - Con `DISCORD_CANAL_REGISTRO` configurado queda constancia de cada `/dar`, `/admin` y `/comando`: quién, cuándo y qué.
 - No publiques el puerto RCON (25575) fuera de la máquina.
