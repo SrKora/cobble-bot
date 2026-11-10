@@ -207,6 +207,23 @@ async def main():
         # Un team apuntado que ya no existe (p. ej. borrado a mano) no rompe nada: se queda sin team
         otro.poner_team(5, "rocket"); otro.marcar_pendiente(5, True)
         assert otro.limpiar_teams({"rojo": 1}) == ["5"] and otro.team_de(5) is None and "5" not in otro.pendientes
+        # --- Ligas: la primera vez solo apunta; luego avisa de las nuevas una sola vez
+        from types import SimpleNamespace as NS
+        from bot.ligas import EstadoLigas
+        from bot.perfiles import Logro
+        kanto = Logro("cobbleverse:trainer/kanto/defeat_champion_blue", "kanto")
+        johto = Logro("cobbleverse:trainer/johto/defeat_champion_lance", "johto")
+        el = EstadoLigas(Path(tmp) / "datos")
+        assert el.nuevas([NS(uuid="u1", nombre="Ana", ligas=[kanto]), NS(uuid="u2", nombre="Luis", ligas=[])]) == []
+        assert "u2" not in el.vistas                                     # sin ligas no se apunta nada
+        nuevas = el.nuevas([NS(uuid="u1", nombre="Ana", ligas=[kanto, johto])])
+        assert [(p.nombre, l.region) for p, l in nuevas] == [("Ana", "johto")]
+        assert el.nuevas([NS(uuid="u1", nombre="Ana", ligas=[kanto, johto])]) == []   # no se repite
+        el.nuevas([])                                                     # una lectura vacía no borra nada
+        el.poner_canal(123); el.poner_rol("kanto", 456)
+        otra = EstadoLigas(Path(tmp) / "datos")
+        assert otra.canal == 123 and otra.roles == {"kanto": 456} and len(otra.vistas["u1"]) == 2
+        print("Ligas OK")
         print("Teams OK")
 
     srv.close()

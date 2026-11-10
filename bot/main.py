@@ -22,6 +22,7 @@ from .archivos import crear_fuente
 from .cobblemon_datos import (NATURALEZAS, RE_EXTRA, RE_ID, RE_JAR_COBBLEMON, RE_MOTE, TIPOS_TERA,
                               DatosCobblemon, parsear_stats, resumen_stats)
 from .entorno import aplicar_entorno, cargar_dotenv
+from .ligas import EstadoLigas
 from .objetos_datos import Mod, buscar, catalogo_de_jars
 from .texto_mc import COLORES, a_json, componentes, texto_plano
 from .perfiles import NOMBRES_COBBLEMON, REGIONES, Perfiles, Perfil, bonito
@@ -133,6 +134,8 @@ class CobbleBot(discord.Client):
         # Teams: los creados desde Discord (y los de config.toml); todo lo que recuerda va en la carpeta de datos del bot
         self.teams_config: dict[str, Team] = cargar_teams(cfg)
         self.registro = Registro(os.environ.get("BOT_DATOS", "datos"))
+        # Ligas completadas: anuncio en un canal y rol de Discord por región (también en la carpeta del bot)
+        self.ligas = EstadoLigas(os.environ.get("BOT_DATOS", "datos"))
         self._reinicio_por: str | None = None     # quién pidió el reinicio con /admin reiniciar
         self._visto_caido = False                 # tras pedir un reinicio, hay que verlo caer antes de darlo por levantado
         self.intervalo_monitor = int(cfg.get("monitor", {}).get("intervalo_segundos", 30))
@@ -551,7 +554,71 @@ class CobbleBot(discord.Client):
             except RconError:
                 pass
         await asyncio.sleep(3)
-        return len(await self.perfiles.todos(forzar=True))
+        perfiles = await self.perfiles.todos(forzar=True)
+        try:
+            await self.revisar_ligas(perfiles)
+        except Exception:
+            log.exception("Error revisando las ligas")
+        return len(perfiles)
+
+    # ---------------------------------------------------------------- ligas
+    async def miembro_de_jugador(self, guild: discord.Guild, jugador: str) -> discord.Member | None:
+        """Usuario de Discord vinculado con ese jugador (con /team vincular), si lo hay."""
+        did = self.registro.discord_de(jugador)
+        if not did:
+            return None
+        try:
+            return guild.get_member(int(did)) or await guild.fetch_member(int(did))
+        except discord.HTTPException:
+            return None
+
+    async def poner_roles_ligas(self, perfiles) -> dict[str, list[str]]:
+        """Pone a cada jugador vinculado el rol de las ligas que tenga. Devuelve {jugador: [regiones nuevas]}."""
+        guild = self.get_guild(self.guild_id) if self.guild_id else None
+        if not guild or not self.ligas.roles:
+            return {}
+        roles = {r: guild.get_role(i) for r, i in self.ligas.roles.items()}
+        if self.puede_gestionar_roles(guild, {r: rol for r, rol in roles.items() if rol}):
+            return {}
+        puestos = {}
+        for p in perfiles:
+            faltan = [roles[l.region] for l in p.ligas if roles.get(l.region)]
+            if not faltan:
+                continue
+            m = await self.miembro_de_jugador(guild, p.nombre)
+            faltan = [r for r in dict.fromkeys(faltan) if m and r not in m.roles]
+            if m and faltan:
+                try:
+                    await m.add_roles(*faltan, reason="CobbleBOT: liga completada")
+                    puestos[p.nombre] = [r.name for r in faltan]
+                    log.info("Rol de liga para %s: %s", p.nombre, ", ".join(r.name for r in faltan))
+                except discord.HTTPException as e:
+                    log.warning("No he podido poner el rol de liga a %s: %s", p.nombre, e)
+        return puestos
+
+    async def revisar_ligas(self, perfiles):
+        """Anuncia las ligas nuevas en el canal de ligas y pone los roles."""
+        nuevas = self.ligas.nuevas(perfiles)
+        await self.poner_roles_ligas(perfiles)
+        canal = self.ligas.canal or self.canal_avisos
+        guild = self.get_guild(self.guild_id) if self.guild_id else None
+        for p, liga in nuevas:
+            region = (liga.region or "").capitalize()
+            m = await self.miembro_de_jugador(guild, p.nombre) if guild else None
+            rol = guild.get_role(self.ligas.roles.get(liga.region, 0)) if guild else None
+            e = discord.Embed(title=f"🏆 ¡Liga{' de ' + region if region else ''} completada!", color=0xF1C40F,
+                              timestamp=datetime.now(timezone.utc))
+            e.description = (f"**{esc(p.nombre)}**{f' ({m.mention})' if m else ''} ha vencido a "
+                             f"**{liga.nombre}**" + (f" y es campeón de **{region}**." if region else "."))
+            if rol and m and rol in m.roles:
+                e.add_field(name="Nuevo rol", value=rol.mention)
+            e.set_thumbnail(url=url_avatar(p))
+            log.info("Liga completada: %s -> %s", p.nombre, liga.id)
+            try:
+                await self.enviar(canal, content=m.mention if m else None, embed=e,
+                                  allowed_mentions=discord.AllowedMentions(users=True, roles=False, everyone=False))
+            except discord.HTTPException as ex:
+                log.warning("No he podido anunciar la liga en Discord: %s", ex)
 
     @tasks.loop(minutes=5)
     async def auto_actualizar(self):
@@ -687,6 +754,7 @@ def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.E
             "`&6` dorado, `&c` rojo, `&a` verde, `&l` negrita…\n"
             "`/comando texto` — cualquier comando permitido (con lista de sugerencias)\n"
             "`/admin team-crear` · `team-editar` · `team-borrar` — teams con el nombre, color, [etiqueta] y rol que quieras\n"
+            "`/admin ligas` — canal de anuncios y rol de Discord de cada liga (se ponen solos al completarla)\n"
             "`/admin team`, `/admin vincular`, `/admin desvincular` — asignar teams y gestionar vínculos\n"
             "`/actualizar` — guarda el mundo y recarga los datos al momento\n"
             "`/diagnostico jugador` — qué archivos y logros encuentra el bot (para ajustar la config)"))
@@ -1156,6 +1224,7 @@ def registrar_comandos(bot: CobbleBot):
             view=ConfirmarReinicio(inter.user.id, aviso), ephemeral=True)
 
     registrar_teams(bot, tree, admin, ac_jugador, ac_categoria)
+    registrar_ligas(bot, admin)
 
     tree.add_command(admin)
 
@@ -1478,6 +1547,60 @@ def main():
     CobbleBot(cfg).run(token, log_handler=None)
 
 
+# =================================================================== ligas
+def registrar_ligas(bot: CobbleBot, admin: app_commands.Group):
+    regiones = sorted({l.split(":")[-1].split("/")[1] for l in bot.perfiles.reglas.ids_ligas if l.count("/") >= 2},
+                      key=lambda r: REGIONES.index(r) if r in REGIONES else 99) if bot.perfiles else []
+    opciones = [app_commands.Choice(name=r.capitalize(), value=r) for r in (regiones or REGIONES)][:25]
+
+    def resumen(guild: discord.Guild | None) -> str:
+        canal = bot.ligas.canal or bot.canal_avisos
+        lineas = [f"📢 Canal de anuncios: {f'<#{canal}>' if canal else '— (no hay: elige uno con `canal`)'}"]
+        for o in opciones:
+            rid = bot.ligas.roles.get(o.value)
+            lineas.append(f"🏆 Liga de {o.name}: {f'<@&{rid}>' if rid else 'sin rol'}")
+        return "\n".join(lineas)
+
+    @admin.command(name="ligas", description="Canal donde se anuncian las ligas completadas y rol de Discord de cada liga")
+    @app_commands.describe(canal="Canal donde anunciar cada liga completada",
+                           region="Liga a la que poner (o quitar) un rol", rol="Rol para quien complete esa liga",
+                           quitar_rol="Quitar el rol de esa liga (ya no se pondrá)")
+    @app_commands.choices(region=opciones)
+    async def adm_ligas(inter: discord.Interaction, canal: discord.TextChannel | None = None,
+                        region: app_commands.Choice[str] | None = None, rol: discord.Role | None = None,
+                        quitar_rol: bool = False):
+        if not bot.es_admin(inter.user) or not inter.guild:
+            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+            return
+        if (rol or quitar_rol) and not region:
+            await inter.response.send_message("Elige también la `region` de la liga.", ephemeral=True)
+            return
+        if rol and (rol.is_default() or rol.managed):
+            await inter.response.send_message("Ese rol no se puede asignar: elige uno normal.", ephemeral=True)
+            return
+        await inter.response.defer(ephemeral=True)
+        avisos = ""
+        if canal:
+            permisos = canal.permissions_for(inter.guild.me)
+            if not (permisos.send_messages and permisos.embed_links and permisos.view_channel):
+                avisos += f"\n⚠️ No puedo escribir en {canal.mention}: dame permiso para ver el canal, enviar mensajes e insertar enlaces."
+            bot.ligas.poner_canal(canal.id)
+        if region and (rol or quitar_rol):
+            bot.ligas.poner_rol(region.value, None if quitar_rol else rol.id)
+            if rol and not quitar_rol:
+                falta = bot.puede_gestionar_roles(inter.guild, {region.value: rol})
+                if falta:
+                    avisos += f"\n⚠️ Para poner el rol, {falta}."
+                elif bot.perfiles:
+                    # Quien ya tenga esa liga recibe el rol ahora
+                    puestos = await bot.poner_roles_ligas(await bot.perfiles.todos())
+                    if puestos:
+                        avisos += "\n✅ Rol puesto ya a: " + ", ".join(esc(n) for n in puestos)
+        await inter.followup.send(resumen(inter.guild) + avisos + "\n\nLos jugadores tienen que tener su Discord "
+                                  "vinculado (`/team vincular`) para recibir el rol. El aviso sale en unos minutos "
+                                  "(cuando el bot relee los datos; `/actualizar` lo hace al momento).", ephemeral=True)
+
+
 # =================================================================== teams
 def componente_copiar(texto: str) -> dict:
     """Texto del chat de Minecraft que se copia al portapapeles al hacer clic (formato JSON de 1.21.1)."""
@@ -1555,6 +1678,8 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
             bot.registro.vincular(inter.user.id, jugador, uuid_mc)
         log.info("%s vinculado con el jugador %s", inter.user, jugador)
         await bot.sincronizar_teams()   # si ya tenía rol de team en Discord, se aplica en el juego
+        if bot.perfiles:
+            await bot.poner_roles_ligas(await bot.perfiles.todos())   # y los roles de las ligas que ya tenga
         team = bot.registro.team_de(inter.user.id)
         extra = (f" Ya estás en **{bot.teams[team].titulo}**." if team in bot.teams
                  else " Ahora elige tu team con `/team unirse`.")

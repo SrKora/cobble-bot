@@ -271,6 +271,7 @@ Al unirte, el bot te pone el **rol de Discord** del team y te mete en el **team 
 | `/admin team-crear nombre [color] [etiqueta] [rol] [emoji] [fuego_amigo]` | Crea un team con el **nombre que quieras**. Si no eliges `rol`, el bot crea un rol de Discord con ese nombre y color. En el chat sale `[Etiqueta] Jugador` |
 | `/admin team-editar team …` | Cambia el nombre, color, etiqueta, rol, emoji o fuego amigo |
 | `/admin team-borrar team` | Borra el team (pide confirmación). Si el rol lo creó el bot, también lo borra |
+| `/admin ligas [canal] [region] [rol] [quitar_rol]` | Canal donde se anuncia cada **liga completada** y rol de Discord que recibe quien la completa (uno por región). Hace falta tener el Discord vinculado (`/team vincular`) para recibir el rol |
 | `/admin team usuario team` | Pone, cambia o quita (`Sin team`) el team de alguien, en Discord y en Minecraft |
 | `/admin vincular usuario jugador` · `/admin desvincular usuario` | Vincular a mano (sin código) o deshacer un vínculo |
 | `/comando texto` | Cualquier comando de la lista `permitidos` de `config.toml`, con sugerencias |
