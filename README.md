@@ -263,8 +263,8 @@ Los teams existen **solo en Minecraft** (nombre con su color y prefijo en el cha
 | `/admin guardar` | Guarda el mundo |
 | `/admin reiniciar [aviso]` | Avisa a los jugadores (chat y título en pantalla), espera y reinicia. **Pide confirmación con un botón.** Requiere que algo vuelva a arrancar el servidor al pararse (en Docker: `restart: unless-stopped`) |
 | `/admin mensaje` | Mensajes en el juego (ver abajo) |
-| `/admin team-crear nombre [color] [prefijo] [fuego_amigo]` | Crea un team con el **nombre que quieras**. El prefijo por defecto es `[Nombre]` (pon `ninguno` para no tener) |
-| `/admin team-editar team …` | Cambia el nombre, el color, el prefijo o el fuego amigo de un team |
+| `/admin team-crear nombre [color] [etiqueta] [fuego_amigo]` | Crea un team con el **nombre que quieras**. En el chat, la lista de jugadores y encima de la cabeza sale `[Etiqueta] Jugador` (por defecto la etiqueta es el nombre del team) |
+| `/admin team-editar team …` | Cambia el nombre, el color, la etiqueta `[ ]` o el fuego amigo de un team |
 | `/admin team-borrar team` | Borra un team (pide confirmación; sus miembros se quedan sin team) |
 | `/admin team jugador team` | Mete a un jugador en un team, lo cambia o lo saca (`Sin team`). No hace falta que esté conectado |
 | `/comando texto` | Cualquier comando de la lista `permitidos` de `config.toml`, con sugerencias |

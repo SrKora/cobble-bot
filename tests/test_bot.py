@@ -14,7 +14,8 @@ from bot.archivos import ArchivosLocales
 from bot.main import CobbleBot, embed_equipo, embed_medallas, embed_perfil, parsear_list
 from bot.perfiles import Perfiles, dinero_de_estructura, extraer_pokemon
 from bot.rcon import RconClient, RconError
-from bot.teams import comandos_crear, comandos_editar, id_para, leer_scoreboard, parsear_miembros
+from bot.teams import (comandos_crear, comandos_editar, etiqueta_de, id_para, leer_scoreboard, parsear_miembros,
+                       texto_de_json)
 
 PASS = "secreta"
 ANA = "11111111-1111-1111-1111-111111111111"
@@ -186,6 +187,12 @@ async def main():
         assert cmds[0] == 'team add rojo {"text": "Equipo Rojo", "color": "red"}'
         assert "team modify rojo friendlyFire false" in cmds and "team modify rojo color red" in cmds
         assert comandos_editar("rojo", fuego_amigo=True) == ["team modify rojo friendlyFire true"]
+        # La etiqueta siempre sale entre [] (sin duplicar corchetes) y se relee bien del mundo
+        assert etiqueta_de("[R] ") == "R" and etiqueta_de("[[Los  Dragones]]") == "Los Dragones"
+        assert teams["rojo"].etiqueta == "R" and teams["azul"].etiqueta == "Los Azules"
+        pre = next(c for c in cmds if " prefix " in c).split(" prefix ", 1)[1]
+        assert texto_de_json(pre) == "[R] " and '"color": "red"' in pre and '"color": "gray"' in pre
+        assert any(c.startswith("team modify rojo prefix ") for c in comandos_crear("rojo", "Rojo", "red", "", False))
         assert parsear_miembros("Team [Equipo Rojo] has 2 member(s): Ana, Luis") == ["Ana", "Luis"]
         assert parsear_miembros("There are no members on team [Equipo Rojo]") == []
         print("Teams OK")

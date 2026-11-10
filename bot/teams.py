@@ -22,13 +22,17 @@ class Team:
     id: str              # nombre interno del team en Minecraft (sin espacios)
     nombre: str          # nombre que se ve
     color: str = "white"
-    prefijo: str = ""    # delante del nombre del jugador en el chat y en la lista de jugadores
+    prefijo: str = ""    # '[Etiqueta] ' delante del nombre del jugador (chat, lista de jugadores, encima de la cabeza)
     fuego_amigo: bool = True
     miembros_guardados: tuple[str, ...] = ()   # los del último guardado del mundo (los de verdad: /team list)
 
     @property
     def titulo(self) -> str:
         return self.nombre or self.id
+
+    @property
+    def etiqueta(self) -> str:
+        return etiqueta_de(self.prefijo) or self.titulo
 
 
 def texto_de_json(valor) -> str:
@@ -65,6 +69,21 @@ def leer_scoreboard(datos: dict) -> dict[str, Team]:
     return dict(sorted(teams.items(), key=lambda kv: kv[1].titulo.lower()))
 
 
+def etiqueta_de(texto: str) -> str:
+    """'[Los Dragones] ' -> 'Los Dragones' (lo de dentro de los corchetes, sin espacios de sobra)."""
+    t = " ".join(str(texto).split())
+    while t.startswith("[") and t.endswith("]"):
+        t = t[1:-1].strip()
+    return t.strip("[]").strip()[:24]
+
+
+def prefijo_json(etiqueta: str, color: str) -> str:
+    """Prefijo del team: '[Etiqueta] ' con los corchetes en gris y la etiqueta del color del team.
+    Minecraft lo pone delante del nombre del jugador en el chat, en la lista de jugadores y encima de su cabeza."""
+    return json.dumps({"text": "[", "color": "gray", "extra": [
+        {"text": etiqueta_de(etiqueta), "color": color}, {"text": "] ", "color": "gray"}]}, ensure_ascii=False)
+
+
 def id_para(nombre: str, existentes) -> str:
     """'Los Dragones Ñ' -> 'los_dragones_n' (válido para Minecraft y que no esté ya cogido)."""
     t = unicodedata.normalize("NFKD", nombre).encode("ascii", "ignore").decode().lower()
@@ -75,25 +94,25 @@ def id_para(nombre: str, existentes) -> str:
     return tid
 
 
-def comandos_crear(tid: str, nombre: str, color: str, prefijo: str, fuego_amigo: bool) -> list[str]:
-    """Comandos para crear un team con su nombre, color, prefijo y fuego amigo."""
+def comandos_crear(tid: str, nombre: str, color: str, etiqueta: str, fuego_amigo: bool) -> list[str]:
+    """Comandos para crear un team con su nombre, color, [etiqueta] y fuego amigo."""
     nombre_json = json.dumps({"text": nombre, "color": color}, ensure_ascii=False)
     return ([f"team add {tid} {nombre_json}"]
-            + comandos_editar(tid, nombre=None, color=color, prefijo=prefijo, fuego_amigo=fuego_amigo)
+            + comandos_editar(tid, nombre=None, color=color, etiqueta=etiqueta or nombre, fuego_amigo=fuego_amigo)
             + [f"team modify {tid} seeFriendlyInvisibles true"])
 
 
-def comandos_editar(tid: str, nombre: str | None = None, color: str | None = None, prefijo: str | None = None,
+def comandos_editar(tid: str, nombre: str | None = None, color: str | None = None, etiqueta: str | None = None,
                     fuego_amigo: bool | None = None, color_actual: str = "white") -> list[str]:
-    """Solo los cambios pedidos (None = no tocar)."""
+    """Solo los cambios pedidos (None = no tocar). La etiqueta es lo que sale entre [] delante del jugador."""
     c = color or color_actual
     cmds = []
     if nombre is not None:
         cmds.append(f"team modify {tid} displayName {json.dumps({'text': nombre, 'color': c}, ensure_ascii=False)}")
     if color is not None:
         cmds.append(f"team modify {tid} color {color}")
-    if prefijo is not None:
-        cmds.append(f"team modify {tid} prefix {json.dumps({'text': prefijo, 'color': c}, ensure_ascii=False)}")
+    if etiqueta is not None:
+        cmds.append(f"team modify {tid} prefix {prefijo_json(etiqueta, c)}")
     if fuego_amigo is not None:
         cmds.append(f"team modify {tid} friendlyFire {'true' if fuego_amigo else 'false'}")
     return cmds

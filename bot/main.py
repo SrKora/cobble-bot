@@ -26,7 +26,7 @@ from .texto_mc import COLORES, a_json, componentes, texto_plano
 from .perfiles import NOMBRES_COBBLEMON, REGIONES, Perfiles, Perfil, bonito
 from .rcon import RconClient, RconError
 from . import nbt
-from .teams import (RUTA_SCOREBOARD, Team, comandos_crear, comandos_editar, id_para, leer_scoreboard,
+from .teams import (RUTA_SCOREBOARD, Team, comandos_crear, comandos_editar, etiqueta_de, id_para, leer_scoreboard,
                     parsear_miembros)
 
 log = logging.getLogger("cobblebot")
@@ -593,7 +593,7 @@ def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.E
             "`/admin mensaje` — mensajes en el juego (chat, título o encima de la hotbar) con colores: "
             "`&6` dorado, `&c` rojo, `&a` verde, `&l` negrita…\n"
             "`/comando texto` — cualquier comando permitido (con lista de sugerencias)\n"
-            "`/admin team-crear` · `team-editar` · `team-borrar` — teams con el nombre, color y prefijo que quieras\n"
+            "`/admin team-crear` · `team-editar` · `team-borrar` — teams con el nombre, color y [etiqueta] que quieras\n"
             "`/admin team jugador team` — mete a un jugador en un team (o lo saca)\n"
             "`/actualizar` — guarda el mundo y recarga los datos al momento\n"
             "`/diagnostico jugador` — qué archivos y logros encuentra el bot (para ajustar la config)"))
@@ -1428,7 +1428,7 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
             e.add_field(name=f"{teams[tid].titulo} ({len(lista)})", value=texto[:1024], inline=not team)
         if team:
             t = teams[team]
-            e.description = (f"Color: **{COLORES.get(t.color, t.color)}** · Prefijo: `{t.prefijo or '—'}` · "
+            e.description = (f"Color: **{COLORES.get(t.color, t.color)}** · En el chat: `[{t.etiqueta}] Jugador` · "
                              f"Fuego amigo: **{'sí' if t.fuego_amigo else 'no'}**")
         e.set_footer(text="🟢 = conectado ahora · Para entrar en un team, pídeselo a un admin")
         await inter.followup.send(embed=e)
@@ -1485,14 +1485,14 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
     tree.add_command(grupo)
 
     # ---- gestión de teams para admins (dentro de /admin)
-    @admin.command(name="team-crear", description="Crea un team en Minecraft con el nombre, color y prefijo que quieras")
+    @admin.command(name="team-crear", description="Crea un team en Minecraft con el nombre, color y etiqueta que quieras")
     @app_commands.describe(nombre="Nombre del team (el que quieras)", color="Color del nombre en el juego",
-                           prefijo="Lo que sale delante del nombre del jugador (por defecto [Nombre]; 'ninguno' = sin prefijo)",
+                           etiqueta="Lo que sale entre [] delante del jugador en el chat (por defecto el nombre del team)",
                            fuego_amigo="¿Los del mismo team se pueden hacer daño? (por defecto no)")
     @app_commands.choices(color=opciones_color)
     async def adm_team_crear(inter: discord.Interaction, nombre: app_commands.Range[str, 1, 32],
-                             color: app_commands.Choice[str] | None = None, prefijo: str | None = None,
-                             fuego_amigo: bool = False):
+                             color: app_commands.Choice[str] | None = None,
+                             etiqueta: app_commands.Range[str, 1, 24] | None = None, fuego_amigo: bool = False):
         if not bot.es_admin(inter.user):
             await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
             return
@@ -1504,42 +1504,40 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
         await inter.response.defer(ephemeral=True)
         tid = id_para(nombre, teams)
         c = color.value if color else "white"
-        pre = "" if (prefijo or "").strip().lower() in ("ninguno", "-", "no") else (
-            " ".join(prefijo.split())[:32] + " " if prefijo else f"[{nombre}] ")
-        for cmd in comandos_crear(tid, nombre, c, pre, fuego_amigo):
+        et = etiqueta_de(etiqueta or "") or nombre
+        for cmd in comandos_crear(tid, nombre, c, et, fuego_amigo):
             await bot.rcon.comando(cmd)
         await bot.guardar_y_releer_teams()
         await inter.followup.send(
             f"✅ Team **{esc(nombre)}** creado (nombre interno `{tid}`) · color {COLORES.get(c, c)} · "
-            f"prefijo `{pre or '—'}` · fuego amigo {'sí' if fuego_amigo else 'no'}.\n"
+            f"en el chat sale `[{et}] Jugador` · fuego amigo {'sí' if fuego_amigo else 'no'}.\n"
             f"Mete jugadores con `/admin team`.", ephemeral=True)
         await bot.enviar(bot.canal_registro, embed=discord.Embed(
             description=f"🛡️ **{inter.user}** creó el team **{esc(nombre)}** (`{tid}`)", color=0x555555,
             timestamp=datetime.now(timezone.utc)))
 
-    @admin.command(name="team-editar", description="Cambia el nombre, color, prefijo o fuego amigo de un team")
+    @admin.command(name="team-editar", description="Cambia el nombre, color, etiqueta [ ] o fuego amigo de un team")
     @app_commands.describe(team="Team", nombre="Nombre nuevo", color="Color nuevo",
-                           prefijo="Prefijo nuevo ('ninguno' = sin prefijo)", fuego_amigo="Fuego amigo")
+                           etiqueta="Texto nuevo entre [] delante del jugador", fuego_amigo="Fuego amigo")
     @app_commands.autocomplete(team=ac_team)
     @app_commands.choices(color=opciones_color)
     async def adm_team_editar(inter: discord.Interaction, team: str, nombre: app_commands.Range[str, 1, 32] | None = None,
-                              color: app_commands.Choice[str] | None = None, prefijo: str | None = None,
-                              fuego_amigo: bool | None = None):
+                              color: app_commands.Choice[str] | None = None,
+                              etiqueta: app_commands.Range[str, 1, 24] | None = None, fuego_amigo: bool | None = None):
         if not bot.es_admin(inter.user):
             await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
             return
         t = await team_o_error(inter, team)
         if not t:
             return
-        pre = None if prefijo is None else (
-            "" if prefijo.strip().lower() in ("ninguno", "-", "no") else " ".join(prefijo.split())[:32] + " ")
+        et = (etiqueta_de(etiqueta) or None) if etiqueta else None
         nuevo_nombre = " ".join(nombre.split()) if nombre else None
-        cmds = comandos_editar(t.id, nuevo_nombre, color.value if color else None, pre, fuego_amigo, t.color)
-        # Si solo cambia el color, se repintan también el nombre y el prefijo
+        cmds = comandos_editar(t.id, nuevo_nombre, color.value if color else None, et, fuego_amigo, t.color)
+        # Si solo cambia el color, se repintan también el nombre y la [etiqueta]
         if color and nuevo_nombre is None:
             cmds += comandos_editar(t.id, nombre=t.titulo, color_actual=color.value)
-        if color and pre is None and t.prefijo:
-            cmds += comandos_editar(t.id, prefijo=t.prefijo, color_actual=color.value)
+        if color and et is None:
+            cmds += comandos_editar(t.id, etiqueta=t.etiqueta, color_actual=color.value)
         if not cmds:
             await inter.response.send_message("No has cambiado nada.", ephemeral=True)
             return
@@ -1549,7 +1547,7 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
         nuevo = (await bot.guardar_y_releer_teams()).get(t.id, t)
         await inter.followup.send(
             f"✅ Team **{esc(nuevo.titulo)}** actualizado · color {COLORES.get(nuevo.color, nuevo.color)} · "
-            f"prefijo `{nuevo.prefijo or '—'}` · fuego amigo {'sí' if nuevo.fuego_amigo else 'no'}.", ephemeral=True)
+            f"en el chat sale `[{nuevo.etiqueta}] Jugador` · fuego amigo {'sí' if nuevo.fuego_amigo else 'no'}.", ephemeral=True)
 
     class ConfirmarBorrado(discord.ui.View):
         def __init__(self, autor_id: int, t: Team):
