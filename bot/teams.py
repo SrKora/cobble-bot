@@ -51,6 +51,24 @@ def texto_de_json(valor) -> str:
     return ""
 
 
+def color_de_json(valor) -> str | None:
+    """Primer color que no sea el gris de los corchetes en un componente de texto ('[' gris + 'DRG' rojo -> 'red')."""
+    if isinstance(valor, str):
+        try:
+            valor = json.loads(valor)
+        except ValueError:
+            return None
+    partes = valor if isinstance(valor, list) else [valor]
+    for v in partes:
+        if isinstance(v, dict):
+            if v.get("color") not in (None, "gray") and str(v.get("text", "")).strip("[] "):
+                return str(v["color"])
+            c = color_de_json(v.get("extra", []))
+            if c:
+                return c
+    return None
+
+
 def leer_scoreboard(datos: dict) -> dict[str, Team]:
     """Teams del scoreboard.dat ya parseado (NBT)."""
     teams = {}
@@ -61,7 +79,9 @@ def leer_scoreboard(datos: dict) -> dict[str, Team]:
         teams[tid] = Team(
             id=tid,
             nombre=texto_de_json(t.get("DisplayName", "")) or tid,
-            color=str(t.get("TeamColor", "reset")),
+            # El color del team va solo en la [etiqueta] (el nombre del jugador queda normal)
+            color=color_de_json(t.get("MemberNamePrefix", "")) or (
+                c if (c := str(t.get("TeamColor", "reset"))) not in ("reset", "") else "white"),
             prefijo=texto_de_json(t.get("MemberNamePrefix", "")),
             fuego_amigo=bool(t.get("AllowFriendlyFire", 1)),
             miembros_guardados=tuple(t.get("Players", []) or []),
@@ -110,7 +130,8 @@ def comandos_editar(tid: str, nombre: str | None = None, color: str | None = Non
     if nombre is not None:
         cmds.append(f"team modify {tid} displayName {json.dumps({'text': nombre, 'color': c}, ensure_ascii=False)}")
     if color is not None:
-        cmds.append(f"team modify {tid} color {color}")
+        # El color va solo en la [etiqueta]: el team queda sin color para que el nombre del jugador no se pinte
+        cmds.append(f"team modify {tid} color reset")
     if etiqueta is not None:
         cmds.append(f"team modify {tid} prefix {prefijo_json(etiqueta, c)}")
     if fuego_amigo is not None:

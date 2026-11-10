@@ -178,6 +178,8 @@ async def main():
              "MemberNamePrefix": '""', "AllowFriendlyFire": 1, "Players": []},
         ]}}))
         teams = leer_scoreboard(sb)
+        pre_json_drg = ('{"text":"[","color":"gray","extra":[{"text":"DRG","color":"red"},'
+                        '{"text":"] ","color":"gray"}]}')
         assert [t.titulo for t in teams.values()] == ["Equipo Rojo", "Los Azules"]          # orden por nombre
         assert teams["rojo"].prefijo == "[R] " and not teams["rojo"].fuego_amigo and teams["azul"].fuego_amigo
         assert teams["rojo"].miembros_guardados == ("Ana",)
@@ -185,11 +187,16 @@ async def main():
         assert id_para("Rojo", {"rojo": 1}) == "rojo_2"                                       # no pisa uno existente
         cmds = comandos_crear("rojo", "Equipo Rojo", "red", "[R] ", False)
         assert cmds[0] == 'team add rojo {"text": "Equipo Rojo", "color": "red"}'
-        assert "team modify rojo friendlyFire false" in cmds and "team modify rojo color red" in cmds
+        assert "team modify rojo friendlyFire false" in cmds and "team modify rojo color reset" in cmds
         assert comandos_editar("rojo", fuego_amigo=True) == ["team modify rojo friendlyFire true"]
         # La etiqueta siempre sale entre [] (sin duplicar corchetes) y se relee bien del mundo
         assert etiqueta_de("[R] ") == "R" and etiqueta_de("[[Los  Dragones]]") == "Los Dragones"
         assert teams["rojo"].etiqueta == "R" and teams["azul"].etiqueta == "Los Azules"
+        assert teams["rojo"].color == "red" and teams["azul"].color == "blue"
+        # Team sin color (nombre del jugador normal): el color se saca de la [etiqueta]
+        sb2 = {"data": {"Teams": [{"Name": "drg", "DisplayName": '{"text":"Dragones","color":"red"}',
+                                   "TeamColor": "reset", "MemberNamePrefix": pre_json_drg}]}}
+        assert leer_scoreboard(sb2)["drg"].color == "red" and leer_scoreboard(sb2)["drg"].etiqueta == "DRG"
         pre = next(c for c in cmds if " prefix " in c).split(" prefix ", 1)[1]
         assert texto_de_json(pre) == "[R] " and '"color": "red"' in pre and '"color": "gray"' in pre
         assert any(c.startswith("team modify rojo prefix ") for c in comandos_crear("rojo", "Rojo", "red", "", False))
