@@ -14,7 +14,8 @@ from bot.archivos import ArchivosLocales
 from bot.main import CobbleBot, embed_equipo, embed_medallas, embed_perfil, nombre_jugador, parsear_list
 from bot.perfiles import Perfiles, dinero_de_estructura, extraer_pokemon
 from bot.rcon import RconClient, RconError
-from bot.teams import Registro, Team, cargar_teams, comandos_crear, id_para, parsear_miembros
+from bot.teams import (COLORES, EMOJI_COLOR, Registro, Team, color_de, png_color, comando_ftb, comandos_crear, id_mc, nombre_team_valido,
+                       parsear_miembros, parsear_party)
 
 PASS = "secreta"
 ANA = "11111111-1111-1111-1111-111111111111"
@@ -176,48 +177,88 @@ async def main():
         for adm, reg in ((False, False), (True, True)):
             e = embed_ayuda(bot, adm, reg)
             assert len(e) <= 6000 and all(len(f.value) <= 1024 for f in e.fields) and len(e.fields) <= 25
-        assert any("Admins" in f.name for f in embed_ayuda(bot, True, True).fields)
-        assert not any("Admins" in f.name or "Regalos" in f.name for f in embed_ayuda(bot, False).fields)
+        assert any("Alto mando" in f.name for f in embed_ayuda(bot, True, True).fields)
+        assert not any("Alto mando" in f.name or "Regalos" in f.name for f in embed_ayuda(bot, False).fields)
+        from bot.main import paginas_ayuda
+        todas = paginas_ayuda(bot, True, True)
+        assert len(todas) + 1 <= 25 and all(len(e) <= 6000 for *_, e in todas.values())   # caben en la lista y en Discord
+        assert "admin" not in paginas_ayuda(bot, False) and "regalos" not in paginas_ayuda(bot, False)
         print("Embeds y diagnóstico OK")
 
-        # --- Teams: config, comandos de Minecraft, miembros y registro de vínculos
-        teams = cargar_teams({"teams": [
-            {"id": "rojo", "nombre": "Equipo Rojo", "rol": "Equipo Rojo", "color": "red", "prefijo": "[R] "},  # formato antiguo: sigue valiendo
-            {"id": "azul", "nombre": "Los Azules", "rol": "Azul", "color": "blue"},   # sin etiqueta: el nombre
-            {"id": "verde", "nombre": "Verde", "rol": "Verde", "color": "green", "etiqueta": "[[VRD]]"},
-            {"id": "mal id!", "rol": "x"},          # id no válido: se ignora
-        ]})
-        assert list(teams) == ["rojo", "azul", "verde"]
-        assert [t.etiqueta for t in teams.values()] == ["R", "Los Azules", "VRD"]    # siempre entre [] una sola vez
-        pre = comandos_crear(teams["rojo"])[3].split(" prefix ", 1)[1]
-        assert pre.startswith('{"text": "[", "color": "gray"') and '{"text": "R", "color": "red"}' in pre
-        assert '{"text": "] ", "color": "gray"}' in pre
-        cmds = comandos_crear(teams["rojo"])
-        assert cmds[0] == 'team add rojo {"text": "Equipo Rojo", "color": "red"}' and "friendlyFire false" in cmds[4]
-        assert cmds[2] == "team modify rojo color reset"          # el nombre del jugador no se pinta
+        # --- Teams de FTB: archivo del mundo, comandos de Minecraft y registro de vínculos
+        party = """{
+	id: "4301f31b-f823-4976-b497-0dfebd5c4a38"
+	type: "party"
+	ranks: {
+		"%s": "member"
+		"%s": "owner"
+		"33333333-3333-3333-3333-333333333333": "invited"
+	}
+	properties: {
+		"ftbteams:display_name": "Los \\"Dragones\\""
+		"ftbteams:description": ""
+		"ftbteams:color": "#ff5555"
+	}
+	owner: "%s"
+	message_history: [{ sender: "%s", text: "type: \\"server\\"" }]
+}""" % (LUIS, ANA, ANA, LUIS)
+        t = parsear_party(party)
+        assert t.id == "4301f31b-f823-4976-b497-0dfebd5c4a38" and t.nombre == 'Los "Dragones"'
+        assert t.color == "#FF5555" and t.color_int == 0xFF5555
+        assert t.miembros == [ANA, LUIS] and t.lider == ANA              # el dueño primero; invitados fuera
+        assert t.id_mc == "ftb_4301f31bf823" == id_mc(t.id) and len(t.id_mc) <= 16
+        assert parsear_party(party.replace('"party"', '"server"')) is None   # teams de servidor: no
+        assert parsear_party(party.replace("#ff5555", "rojo")).color == "#FFFFFF"
+        # Como lo escribe FTB de verdad: claves de ranks sin comillas, y un oficial
+        real = party.replace(f'"{LUIS}": "member"', f'{LUIS}: "officer"').replace(f'"{ANA}": "owner"', f'{ANA}: "owner"')
+        r = parsear_party(real)
+        assert r.miembros == [ANA, LUIS] and r.oficiales == [LUIS], (r.miembros, r.oficiales)
+        assert r.puede_gestionar(ANA) and r.puede_gestionar(LUIS.upper()) and not r.puede_gestionar(None)
+        assert not t.puede_gestionar(LUIS)                                    # miembro normal: no
+        assert Team("ed2875a4-c064-4623-8b31-f17f120aa75a", "Los mejores").id_corto == "Los_mejores#ed2875a4"
+        assert Team("ed2875a4-c064-4623-8b31-f17f120aa75a", "Señor X!").id_corto == "Se_or_X_#ed2875a4"
+        import zlib as _z
+        png = png_color("#FF0080", 4)
+        assert png.startswith(b"\x89PNG\r\n\x1a\n") and png.endswith(b"IEND\xaeB`\x82")
+        idat = png[png.index(b"IDAT") + 4:png.index(b"IEND") - 8]
+        assert _z.decompress(idat) == (b"\x00" + b"\xff\x00\x80" * 4) * 4                   # 4x4 del color pedido
+        assert set(EMOJI_COLOR) == set(COLORES) and len(COLORES) <= 25                       # cabe en una lista de Discord
+        assert color_de("rojo") == "#FF5555" and color_de("ff00aa") == "#FF00AA" and color_de("#12345") is None
+        assert nombre_team_valido("  Los\nmejores §cX ") == "Los mejores X" and len(nombre_team_valido("x" * 50)) == 32
+        assert comando_ftb(Team("ed2875a4-c064-4623-8b31-f17f120aa75a", "Los mejores"), "color", "#FF0000") == \
+            "ftbteams party settings_for Los_mejores#ed2875a4 ftbteams:color #FF0000"
+        cmds = comandos_crear(t)
+        assert cmds[0].startswith("team add ftb_4301f31bf823 ") and '"color": "#FF5555"' in cmds[0]
+        assert cmds[2] == "team modify ftb_4301f31bf823 color reset"          # el nombre del jugador no se pinta
+        assert '{"text": "] ", "color": "gray"}' in cmds[3] and "friendlyFire false" in cmds[4]
+        t.etiqueta = "DRG"
+        assert '{"text": "DRG", "color": "#FF5555"}' in comandos_crear(t)[3]
         assert parsear_miembros("Team [Equipo Rojo] has 2 member(s): Ana, Luis") == ["Ana", "Luis"]
         assert parsear_miembros("There are no members on team [Equipo Rojo]") == []
-        reg = Registro(Path(tmp) / "datos")
-        reg.vincular(1, "Ana", ANA)
-        reg.poner_team(1, "rojo")
+        datos = Path(tmp) / "datos"
+        datos.mkdir(parents=True, exist_ok=True)
+        (datos / "teams.json").write_text(json.dumps({          # formato anterior (teams creados desde Discord)
+            "teams": {"losmejores": {"id": "losmejores", "rol": "123", "rol_creado": True}},
+            "vinculos": {"1": {"nombre": "Ana", "uuid": ANA}}, "equipos": {"1": "losmejores"}}))
+        reg = Registro(datos)
+        assert reg.antiguos == {"losmejores": {"rol": "123", "rol_creado": True}} and reg.uuid_de(1) == ANA
+        reg.antiguo_hecho("losmejores")
+        assert Registro(datos).antiguos == {}
         codigo = reg.nuevo_codigo(2, "Luis")
         assert reg.comprobar_codigo(2, "x") is None and reg.comprobar_codigo(2, codigo) == "Luis"
         assert reg.comprobar_codigo(2, codigo) is None           # un código solo vale una vez
         reg.vincular(2, "ana")                                    # la cuenta pasa a otro usuario de Discord
-        assert reg.jugador_de(1) is None and reg.team_de(1) is None and reg.jugador_de(2) == "ana"
-        assert Registro(Path(tmp) / "datos").vinculos == reg.vinculos   # se guarda en disco
-        # Teams creados desde Discord: se guardan en la carpeta del bot y se borran con sus miembros
-        assert id_para("Los Dragones Ñ!", {}) == "los_dragones_n" and id_para("Rojo", {"rojo": 1}) == "rojo_2"
-        reg.guardar_team(Team("dragones", "Los Dragones", "123", "red", "DRG", rol_creado=True))
-        reg.poner_team(2, "dragones")
-        otro = Registro(Path(tmp) / "datos")
-        assert otro.teams["dragones"].etiqueta == "DRG" and otro.teams["dragones"].desde_discord
-        assert otro.teams["dragones"].rol_creado and otro.team_de(2) == "dragones"
-        assert otro.borrar_team("dragones") == ["2"] and otro.team_de(2) is None
-        assert "dragones" not in Registro(Path(tmp) / "datos").teams
-        # Un team apuntado que ya no existe (p. ej. borrado a mano) no rompe nada: se queda sin team
-        otro.poner_team(5, "rocket"); otro.marcar_pendiente(5, True)
-        assert otro.limpiar_teams({"rojo": 1}) == ["5"] and otro.team_de(5) is None and "5" not in otro.pendientes
+        assert reg.jugador_de(1) is None and reg.jugador_de(2) == "ana" and reg.uuid_de(2) is None
+        assert Registro(datos).vinculos == reg.vinculos   # se guarda en disco
+        # Lo que se cambia desde Discord (rol, etiqueta, emoji…) se recuerda por team
+        t.rol, t.rol_creado, t.emoji = "999", True, "🐉"
+        reg.guardar_extras(t)
+        otro = parsear_party(party)
+        Registro(datos).aplicar_extras(otro)
+        assert (otro.rol, otro.rol_creado, otro.emoji, otro.etiqueta) == ("999", True, "🐉", "DRG")
+        assert otro.titulo == '🐉 Los "Dragones"'
+        reg.olvidar_team(t.id)
+        assert t.id not in Registro(datos).extras
         # --- Ligas: la primera vez solo apunta; luego avisa de las nuevas una sola vez
         from types import SimpleNamespace as NS
         from bot.ligas import EstadoLigas
@@ -235,6 +276,20 @@ async def main():
         otra = EstadoLigas(Path(tmp) / "datos")
         assert otra.canal == 123 and otra.roles == {"kanto": 456} and len(otra.vistas["u1"]) == 2
         print("Ligas OK")
+        # Invitaciones y cosas pendientes desde Discord: se guardan y sobreviven a un reinicio
+        reg = Registro(Path(tmp) / "inv")
+        reg.invitar("t1", 1, 2); reg.invitar("t1", 1, 2); reg.invitar("t2", 3, 2)
+        assert [x["team"] for x in reg.invitaciones_para(2)] == ["t1", "t2"]      # sin repetidas
+        assert reg.quitar_invitacion("t1", 2) and not reg.quitar_invitacion("t1", 2)
+        reg.encolar("crear", 2, "Ana", nombre="Los X", color="#FF0000")
+        reg.encolar("unir", 2, "ana", team="t2")                                  # solo lo último por jugador
+        assert len(reg.pendientes) == 1 and reg.pendiente_de("ANA")["accion"] == "unir"
+        otra = Registro(Path(tmp) / "inv")
+        assert [x["team"] for x in otra.invitaciones_para("2")] == ["t2"] and otra.pendiente_de("Ana")["team"] == "t2"
+        otra.olvidar_team_pendientes("t2")
+        assert not otra.invitaciones and not otra.pendientes
+        otra.invitaciones.append({"team": "t3", "para": "9", "de": "1", "cuando": 0})   # caducada
+        assert otra.invitaciones_para(9) == []
         print("Teams OK")
 
     srv.close()

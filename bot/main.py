@@ -27,8 +27,9 @@ from .objetos_datos import Mod, buscar, catalogo_de_jars
 from .texto_mc import COLORES, a_json, componentes, texto_plano
 from .perfiles import NOMBRES_COBBLEMON, REGIONES, Perfiles, Perfil, bonito
 from .rcon import RconClient, RconError
-from .teams import (HEX_COLORES, Registro, Team, cargar_teams, comandos_crear, etiqueta_de, id_para,
-                    parsear_miembros)
+from .teams import COLORES as COLORES_TEAM
+from .teams import (EMOJI_COLOR, RE_UUID, Registro, Team, color_de, png_color, comando_ftb, comandos_crear, etiqueta_de, id_mc, nombre_team_valido,
+                    parsear_miembros, parsear_party)
 
 log = logging.getLogger("cobblebot")
 COLOR = 0xE3350D  # rojo Poké Ball
@@ -147,8 +148,15 @@ class CobbleBot(discord.Client):
         self._caido_desde: float | None = None
         # Avisar en Discord de quién entra y sale del servidor (los avisos de caída/reinicio van siempre)
         self.avisar_entradas = bool(cfg.get("monitor", {}).get("avisar_entradas", False))
-        # Teams: los creados desde Discord (y los de config.toml); todo lo que recuerda va en la carpeta de datos del bot
-        self.teams_config: dict[str, Team] = cargar_teams(cfg)
+        # Teams: los de FTB Teams (se crean en el juego). Lo que el bot recuerda va en su carpeta de datos
+        self.carpeta_mundo = str(a.get("carpeta_mundo", "world")).strip("/")
+        self.teams: dict[str, Team] = {}           # id del team de FTB -> Team (se relee al sincronizar)
+        self._nombres: dict[str, str] = {}         # uuid -> nombre de jugador (de usercache.json)
+        self._ausencias: dict[str, int] = {}       # team que no aparece -> lecturas seguidas sin verlo
+        self._ftb_borrados: set[str] = set()       # teams que FTB ha movido a ftbteams/deleted
+        self._lock_pendientes = asyncio.Lock()
+        self._lock_teams = asyncio.Lock()
+        self._ultima_actualizacion_teams = 0.0
         self.registro = Registro(os.environ.get("BOT_DATOS", "datos"))
         # Ligas completadas: anuncio en un canal y rol de Discord por región (también en la carpeta del bot)
         self.ligas = EstadoLigas(os.environ.get("BOT_DATOS", "datos"))
@@ -187,118 +195,183 @@ class CobbleBot(discord.Client):
         asyncio.create_task(self._precargar())
 
     # ---------------------------------------------------------------- teams
-    @property
-    def teams(self) -> dict[str, Team]:
-        """Todos los teams: los de config.toml y los creados desde Discord, ordenados por nombre."""
-        todos = {**self.teams_config, **self.registro.teams}
-        return dict(sorted(todos.items(), key=lambda kv: kv[1].nombre.lower()))
+    def team_de_uuid(self, uuid: str | None) -> Team | None:
+        if not uuid:
+            return None
+        return next((t for t in self.teams.values() if uuid.lower() in t.miembros), None)
 
-    def roles_teams(self, guild: discord.Guild) -> dict[str, discord.Role | None]:
-        """Rol de Discord de cada team (por ID o por nombre exacto)."""
-        res = {}
-        for tid, t in self.teams.items():
-            rol = guild.get_role(int(t.rol)) if t.rol.isdigit() else discord.utils.get(guild.roles, name=t.rol)
-            res[tid] = rol
-        return res
+    def team_de_discord(self, discord_id) -> Team | None:
+        uuid = self.registro.uuid_de(discord_id)
+        if not uuid:
+            jugador = (self.registro.jugador_de(discord_id) or "").lower()
+            uuid = next((u for u, n in self._nombres.items() if n.lower() == jugador), None) if jugador else None
+        return self.team_de_uuid(uuid)
 
-    def puede_gestionar_roles(self, guild: discord.Guild, roles: dict) -> str | None:
-        """None si el bot puede poner y quitar los roles de los teams; si no, qué le falta."""
+    def nombres_miembros(self, t: Team) -> list[str]:
+        return [self._nombres[u] for u in t.miembros if u in self._nombres]
+
+    def rol_de(self, guild: discord.Guild, t) -> discord.Role | None:
+        rol = str(t.rol if isinstance(t, Team) else t.get("rol", "") or "")
+        return guild.get_role(int(rol)) if rol.isdigit() else None
+
+    def puede_gestionar_roles(self, guild: discord.Guild, roles) -> str | None:
+        """None si el bot puede poner y quitar esos roles; si no, qué le falta."""
         yo = guild.me
         if not yo.guild_permissions.manage_roles:
             return "me falta el permiso **Gestionar roles**"
-        altos = [r.name for r in roles.values() if r and r >= yo.top_role]
+        altos = [r.name for r in (roles.values() if isinstance(roles, dict) else roles) if r and r >= yo.top_role]
         if altos:
             return f"mi rol tiene que estar **por encima** de {', '.join(altos)} (Ajustes del servidor → Roles)"
         return None
 
-    async def preparar_teams_mc(self):
-        """Crea los teams en Minecraft con su color y su [etiqueta] (si ya existen, solo los actualiza)."""
+    async def leer_teams(self) -> dict[str, Team] | None:
+        """Teams de FTB del mundo. None si no se han podido leer (entonces no se toca nada)."""
+        if not self.fuente:
+            return None
+        base = f"{self.carpeta_mundo}/ftbteams"
         try:
+            if await self.fuente.leer_texto(f"{base}/ftbteams.snbt") is None:
+                return {}           # FTB Teams no está (o el servidor aún no lo ha guardado nunca)
+            teams = {}
+            for archivo in await self.fuente.listar(f"{base}/party"):
+                if archivo.endswith(".snbt"):
+                    t = parsear_party(await self.fuente.leer_texto(f"{base}/party/{archivo}") or "")
+                    if t:
+                        teams[t.id] = t
+            # FTB mueve aquí los teams disueltos: se quitan ya, sin esperar a la segunda lectura
+            self._ftb_borrados = {m.group(0).lower() for a in await self.fuente.listar(f"{base}/deleted")
+                                  if (m := re.search(RE_UUID, a))}
+            cache = await self.fuente.leer_json("usercache.json") or []
+            self._nombres = {c["uuid"].lower(): c["name"] for c in cache if c.get("uuid") and c.get("name")}
+            for v in self.registro.vinculos.values():
+                if v.get("uuid"):
+                    self._nombres.setdefault(v["uuid"].lower(), v["nombre"])
+            return teams
+        except Exception:
+            log.exception("No he podido leer los teams de FTB")
+            return None
+
+    async def sincronizar_teams(self, guardar_antes: bool = False):
+        """Manda el juego: lee los teams de FTB y los copia a Discord (roles) y al chat ([etiqueta])."""
+        async with self._lock_teams:
+            if guardar_antes:
+                try:
+                    await self.rcon.comando("save-all")     # FTB escribe sus teams al guardar el mundo
+                    await asyncio.sleep(3)
+                except RconError:
+                    pass
+            leidos = await self.leer_teams()
+            if leidos is None:
+                return
+            for t in leidos.values():
+                self.registro.aplicar_extras(t)
+            # Un team que deja de aparecer se da por borrado a la segunda lectura (por si se leyó a medio guardar)
+            borrados = []
+            for tid in list(self.registro.extras):
+                if tid in leidos:
+                    self._ausencias.pop(tid, None)
+                else:
+                    self._ausencias[tid] = self._ausencias.get(tid, 0) + 1
+                    if self._ausencias[tid] >= 2 or tid in self._ftb_borrados:
+                        borrados.append(tid)
+            self.teams = dict(sorted(leidos.items(), key=lambda kv: kv[1].nombre.lower()))
+            guild = self.get_guild(self.guild_id) if self.guild_id else None
+            antiguos_hechos = await self._teams_discord(guild, borrados) if guild else set()
+            await self._teams_minecraft(borrados)
+            async with self.registro.lock:
+                for tid in antiguos_hechos:
+                    self.registro.antiguo_hecho(tid)
+                for tid in borrados:
+                    self.registro.olvidar_team(tid)
+                    self.registro.olvidar_team_pendientes(tid)
+                    self._ausencias.pop(tid, None)
+
+    async def _teams_discord(self, guild: discord.Guild, borrados: list[str]) -> set[str]:
+        """Roles de Discord de los teams. Devuelve los teams del sistema anterior que ya se han quitado de Discord."""
+        puede = guild.me.guild_permissions.manage_roles
+        hechos = set()
+        # Roles del sistema anterior y de teams borrados: fuera (si los creó el bot, se borran)
+        viejos = [(f"antiguo:{tid}", d) for tid, d in self.registro.antiguos.items()] + \
+                 [(tid, self.registro.extras.get(tid, {})) for tid in borrados]
+        for clave, d in viejos:
+            rol = self.rol_de(guild, d)
+            if rol and puede and rol < guild.me.top_role:
+                try:
+                    if d.get("rol_creado"):
+                        await rol.delete(reason="CobbleBOT: el team ya no existe")
+                    else:
+                        for did in self.registro.vinculos:
+                            m = await self.miembro_fresco(guild, did)
+                            if m and rol in m.roles:
+                                await m.remove_roles(rol, reason="CobbleBOT: el team ya no existe")
+                except discord.HTTPException:
+                    log.warning("No he podido quitar el rol %s", rol)
+                    continue
+            elif rol:
+                continue        # sin permisos: se reintenta en la siguiente sincronización
+            if clave.startswith("antiguo:"):
+                hechos.add(clave.split(":", 1)[1])
+        if not puede:
+            return hechos
+        # Un rol por team: lo crea el bot con el nombre y el color de FTB (y lo mantiene al día)
+        for t in self.teams.values():
+            rol = self.rol_de(guild, t)
+            try:
+                if not rol:
+                    rol = await guild.create_role(name=t.nombre, colour=discord.Colour(t.color_int), mentionable=True,
+                                                  reason="CobbleBOT: team nuevo de FTB Teams")
+                    t.rol, t.rol_creado = str(rol.id), True
+                    async with self.registro.lock:
+                        self.registro.guardar_extras(t)
+                    log.info("Rol creado para el team %s", t.nombre)
+                elif t.rol_creado and rol < guild.me.top_role and (
+                        rol.name != t.nombre or rol.colour.value != t.color_int):
+                    await rol.edit(name=t.nombre, colour=discord.Colour(t.color_int),
+                                   reason="CobbleBOT: el team cambió de nombre o color en el juego")
+                elif t.id not in self.registro.extras:
+                    async with self.registro.lock:
+                        self.registro.guardar_extras(t)
+            except discord.HTTPException as e:
+                log.warning("No he podido crear o cambiar el rol del team %s: %s", t.nombre, e)
+        # Cada usuario vinculado: el rol de su team y ninguno más
+        roles = {tid: self.rol_de(guild, t) for tid, t in self.teams.items()}
+        manejables = [r for r in roles.values() if r and r < guild.me.top_role]
+        for did in list(self.registro.vinculos):
+            m = await self.miembro_fresco(guild, did)
+            if not m:
+                continue
+            t = self.team_de_discord(did)
+            poner = roles.get(t.id) if t else None
+            quitar = [r for r in manejables if r in m.roles and r != poner]
+            try:
+                if quitar:
+                    await m.remove_roles(*quitar, reason="CobbleBOT: no está en ese team de FTB")
+                if poner and poner in manejables and poner not in m.roles:
+                    await m.add_roles(poner, reason="CobbleBOT: está en ese team de FTB")
+            except discord.HTTPException as e:
+                log.warning("No he podido cambiar los roles de team de %s: %s", m, e)
+        return hechos
+
+    async def _teams_minecraft(self, borrados: list[str]):
+        """[Etiqueta] en el juego: un team de Minecraft (/team) por cada team de FTB, con sus miembros."""
+        try:
+            for tid in list(self.registro.antiguos):
+                await self.rcon.comando(f"team remove {tid}")
+            for tid in borrados:
+                await self.rcon.comando(f"team remove {id_mc(tid)}")
             for t in self.teams.values():
                 for c in comandos_crear(t):
                     await self.rcon.comando(c)
-        except RconError:
-            pass
-
-    async def cambiar_team(self, miembro: discord.Member, team: str | None) -> list[str]:
-        """Pone (o quita, con None) el team de alguien en Discord, en Minecraft y en el registro."""
-        problemas = []
-        if team and team not in self.teams:      # team que ya no existe (borrado): se queda sin team
-            team = None
-        roles = self.roles_teams(miembro.guild)
-        quitar = [r for tid, r in roles.items() if r and r in miembro.roles and tid != team]
-        poner = roles.get(team) if team else None
-        falta = self.puede_gestionar_roles(miembro.guild, roles)
-        rol_ok = False
-        if falta:
-            problemas.append(f"No he podido cambiar el rol de Discord: {falta}. Lo pondré solo en cuanto pueda.")
-        else:
-            try:
-                if quitar:
-                    await miembro.remove_roles(*quitar, reason="CobbleBOT: cambio de team")
-                if poner and poner not in miembro.roles:
-                    await miembro.add_roles(poner, reason="CobbleBOT: cambio de team")
-                rol_ok = True
-            except discord.HTTPException as e:
-                problemas.append(f"Discord no me dejó cambiar el rol ({e.text or e.status}).")
-        if team and not poner:
-            problemas.append(f"No encuentro el rol de Discord «{self.teams[team].rol}».")
-        jugador = self.registro.jugador_de(miembro.id)
-        if jugador:
-            try:
-                await self.rcon.comando(f"team join {team} {jugador}" if team else f"team leave {jugador}")
-            except RconError:
-                problemas.append("El servidor de Minecraft no responde: se aplicará en el juego cuando vuelva.")
-        async with self.registro.lock:
-            self.registro.poner_team(miembro.id, team)
-            self.registro.marcar_pendiente(miembro.id, not rol_ok)
-        log.info("Team de %s (%s) -> %s", miembro, jugador, team)
-        return problemas
-
-    async def sincronizar_teams(self):
-        """Manda Discord: copia al registro y a Minecraft los roles de team que tenga cada uno."""
-        guild = self.get_guild(self.guild_id) if self.guild_id else None
-        if not guild or not self.teams:
-            return
-        # Quien tenía apuntado un team que ya no existe (borrado) pasa a estar sin team
-        async with self.registro.lock:
-            huerfanos = self.registro.limpiar_teams(self.teams)
-        if huerfanos:
-            log.info("Quitados %d team(s) que ya no existen del registro", len(huerfanos))
-        roles = self.roles_teams(guild)
-        if not self.puede_gestionar_roles(guild, roles) and any(roles.values()):
-            # Solo se copian los roles de Discord si el bot puede gestionarlos (si no, se perderían cambios)
-            for did in list(self.registro.vinculos):
-                try:
-                    # Siempre desde Discord: sin el intent de miembros, la caché no se entera de los roles
-                    # que se acaban de poner y parecería que no tiene ninguno (y se le sacaría del team)
-                    m = await guild.fetch_member(int(did))
-                except discord.HTTPException:
-                    continue
-                if did in self.registro.pendientes:
-                    # El rol no se pudo poner en su momento: ahora se pone el del registro (no al revés)
-                    await self.cambiar_team(m, self.registro.team_de(m.id))
-                    continue
-                con_rol = [tid for tid, r in roles.items() if r and r in m.roles]
-                actual = self.registro.team_de(m.id)
-                nuevo = (actual if actual in con_rol else con_rol[0]) if con_rol else None
-                if nuevo != actual:
-                    async with self.registro.lock:
-                        self.registro.poner_team(m.id, nuevo)
-                    log.info("Team de %s cambiado en Discord: %s -> %s", m, actual, nuevo)
-        try:
-            for tid in self.teams:
-                en_mc = {n.lower(): n for n in parsear_miembros(await self.rcon.comando(f"team list {tid}"))}
-                deseados = {n.lower(): n for _, n in self.registro.miembros(tid)}
+                en_mc = {n.lower(): n for n in parsear_miembros(await self.rcon.comando(f"team list {t.id_mc}"))}
+                deseados = {n.lower(): n for n in self.nombres_miembros(t)}
                 for n in deseados.keys() - en_mc.keys():
-                    await self.rcon.comando(f"team join {tid} {deseados[n]}")
+                    await self.rcon.comando(f"team join {t.id_mc} {deseados[n]}")
                 for n in en_mc.keys() - deseados.keys():
-                    if self.registro.discord_de(en_mc[n]):     # solo se toca a jugadores vinculados
-                        await self.rcon.comando(f"team leave {en_mc[n]}")
+                    await self.rcon.comando(f"team leave {en_mc[n]}")
         except RconError:
             pass
 
-    @tasks.loop(minutes=5)
+    @tasks.loop(minutes=1)
     async def sincronizar_teams_loop(self):
         # Un fallo no debe parar la sincronización para siempre: se apunta y se reintenta a los 5 minutos
         try:
@@ -309,11 +382,167 @@ class CobbleBot(discord.Client):
     @sincronizar_teams_loop.before_loop
     async def _antes_teams(self):
         await self.wait_until_ready()
-        await self.preparar_teams_mc()
 
     @sincronizar_teams_loop.error
     async def _error_teams(self, error):
         log.exception("Error sincronizando teams", exc_info=error)
+
+    # ---- lo que se pide desde Discord y se hace en el juego (FTB Teams)
+    # Ojo: los comandos de FTB que necesitan "ser" el jugador (party create/leave/invite) NO funcionan desde la
+    # consola ni con "execute as" (FTB comprueba los permisos con la consola). Por eso:
+    #   · crear: se le manda al jugador un mensaje en el chat; al hacer clic, lo crea él (y el bot pone el color);
+    #   · entrar, salir, echar y disolver: con los comandos de admin de FTB (force-add/force-remove/force-disband).
+    async def ftb_cmd(self, comando: str) -> str | None:
+        """Manda un comando de FTB Teams. None si ha ido bien; si no, el motivo."""
+        try:
+            salida = limpiar(await self.rcon.comando(comando))
+        except RconError:
+            return "el servidor no responde (¿está apagado?)"
+        log.info("FTB: %s -> %s", comando, salida[:200].replace("\n", " | "))
+        if re.search(r"unknown|incomplete|incorrect|error|not found|cannot|can't|no player|already|not in|must|"
+                     r"isn't|is not|expected|invalid", salida, re.I):
+            return salida[:200] or "FTB no ha aceptado el cambio"
+        return None
+
+    async def party_de(self, jugador: str) -> str | None | bool:
+        """Nombre del team de FTB en el que está AHORA un jugador conectado (None: en ninguno; False: no se sabe)."""
+        try:
+            salida = limpiar(await self.rcon.comando(f"execute as {jugador} run ftbteams info"))
+        except RconError:
+            return False
+        m = re.search(r"==\s*(.+?)\s*\[(\w+)\]\s*==", salida)
+        if not m:
+            return False
+        return m.group(1) if m.group(2).lower() == "party" else None
+
+    def jugador_en_team(self, jugador: str) -> Team | None:
+        u = next((x for x, n in self._nombres.items() if n.lower() == jugador.lower()), None)
+        return self.team_de_uuid(u)
+
+    def _es_dueno(self, t: Team, jugador: str) -> bool:
+        return self._nombres.get(t.lider, "").lower() == jugador.lower()
+
+    async def _sacar(self, t: Team, j: str) -> str | None:
+        """Saca a un jugador de su team. Si es el dueño y está solo, el team se disuelve."""
+        if self._es_dueno(t, j):
+            if len(t.miembros) > 1:
+                return (f"es el dueño de **{t.nombre}** y tiene más miembros: hay que pasar el liderazgo "
+                        "(en el juego) o disolver el team")
+            return await self.ftb_cmd(f"ftbteams force-disband {t.id_corto}")
+        return await self.ftb_cmd(f"ftbteams force-remove {t.id_corto} {j}")
+
+    async def mandar_clic_crear(self, j: str, nombre: str):
+        boton = {"text": f"[Crear el team {nombre}]", "color": "green", "bold": True,
+                 "clickEvent": {"action": "run_command", "value": f"/ftbteams party create {nombre}"},
+                 "hoverEvent": {"action": "show_text", "contents": {"text": "Haz clic para crear el team", "color": "yellow"}}}
+        try:
+            await self.rcon.comando(self.cmd_mensaje("&ePediste crear un team desde Discord: ", j, privado=True,
+                                                     estilo={"color": "yellow"}, extra=[boton]))
+        except RconError:
+            pass
+
+    async def hacer_en_juego(self, p: dict) -> tuple[str, str | None]:
+        """Hace en el juego lo pedido desde Discord (el jugador tiene que estar conectado).
+        Devuelve (estado, error): estado "hecho" o "clic" (esperando a que haga clic en el chat del juego)."""
+        j, accion = p["jugador"], p["accion"]
+        actual = self.jugador_en_team(j)
+        if accion == "crear":
+            party = await self.party_de(j)
+            if party is False:
+                party = actual.nombre if actual else None
+            if party:
+                if party.lower() != p["nombre"].lower():
+                    return "hecho", f"ya estás en el team **{party}**: sal de él antes de crear otro"
+                if p.get("color"):    # ya lo ha creado: se le pone el color elegido en Discord
+                    await self.ftb_cmd(f"ftbteams party settings_for {j} ftbteams:color {p['color']}")
+                return "hecho", None
+            await self.mandar_clic_crear(j, p["nombre"])
+            return "clic", None
+        if accion == "unir":
+            t = self.teams.get(p["team"])
+            if not t:
+                return "hecho", "ese team ya no existe"
+            if actual and actual.id == t.id:
+                return "hecho", None
+            if actual and (f := await self._sacar(actual, j)):
+                return "hecho", f"no he podido sacarte de **{actual.nombre}**: {f}"
+            return "hecho", await self.ftb_cmd(f"ftbteams force-add {t.id_corto} {j}")
+        if accion in ("salir", "echar"):
+            t = actual if accion == "salir" else self.teams.get(p.get("team", ""))
+            if not t or not actual or actual.id != t.id:
+                return "hecho", None     # ya no está en ese team
+            return "hecho", await self._sacar(t, j)
+        return "hecho", None
+
+    def texto_accion(self, p: dict) -> str:
+        t = self.teams.get(p.get("team", ""))
+        nombre = t.nombre if t else p.get("nombre", "?")
+        return {"crear": f"crear el team **{nombre}**", "unir": f"entrar en el team **{nombre}**",
+                "salir": "salir de tu team", "echar": f"salir del team **{nombre}** (te han echado)"}.get(p["accion"], "?")
+
+    async def avisar_discord(self, discord_id, texto: str):
+        """Mensaje privado a un usuario (si tiene los MD cerrados, no pasa nada)."""
+        try:
+            u = self.get_user(int(discord_id)) or await self.fetch_user(int(discord_id))
+            await u.send(texto)
+        except (discord.HTTPException, ValueError):
+            pass
+
+    async def pedir_en_juego(self, p: dict) -> tuple[str, str | None]:
+        """Lo hace ya si el jugador está conectado; si no, lo deja pendiente para cuando entre.
+        Devuelve (estado, error): estado "hecho", "pendiente" (no está conectado) o "clic" (crear: falta su clic)."""
+        try:
+            _, _, conectados = parsear_list(await self.rcon.comando(CMD_LIST))
+        except RconError:
+            conectados = []
+        nombre = next((n for n in conectados if n.lower() == p["jugador"].lower()), None)
+        datos = {k: v for k, v in p.items() if k not in ("accion", "discord", "jugador", "cuando")}
+        if not nombre:
+            async with self.registro.lock:
+                self.registro.encolar(p["accion"], p["discord"], p["jugador"], **datos)
+            return "pendiente", None
+        async with self._lock_pendientes:
+            estado, error = await self.hacer_en_juego({**p, "jugador": nombre})
+            if estado == "clic":     # se comprueba cada 30 s si ya lo ha creado
+                async with self.registro.lock:
+                    self.registro.encolar(p["accion"], p["discord"], nombre, aviso=time.time(), **datos)
+        if estado == "hecho" and not error:
+            await self.sincronizar_teams(guardar_antes=True)
+        return estado, error
+
+    async def procesar_pendientes(self, conectados: set[str], recien: set[str]):
+        """Lo pendiente desde Discord de los jugadores conectados (recien: los que acaban de entrar)."""
+        en_linea = {n.lower(): n for n in conectados}
+        hechos = []
+        async with self._lock_pendientes:
+            for p in list(self.registro.pendientes):
+                nombre = en_linea.get(p["jugador"].lower())
+                if not nombre:
+                    continue
+                try:
+                    if p["accion"] == "crear":
+                        party = await self.party_de(nombre)
+                        if not party and nombre not in recien and time.time() - p.get("aviso", 0) < 300:
+                            continue    # ya tiene el mensaje para hacer clic: se le recuerda cada 5 minutos
+                    estado, error = await self.hacer_en_juego({**p, "jugador": nombre})
+                except Exception:
+                    log.exception("Error haciendo en el juego lo pendiente de %s", nombre)
+                    estado, error = "hecho", "error inesperado del bot (avisa a un admin)"
+                async with self.registro.lock:
+                    if estado == "clic":
+                        p["aviso"] = time.time()
+                        self.registro.guardar()
+                        continue
+                    self.registro.quitar_pendiente(nombre)
+                hechos.append((p, nombre, error))
+        if not hechos:
+            return
+        await self.sincronizar_teams(guardar_antes=True)
+        for p, nombre, error in hechos:
+            # Sin avisos cuando sale bien (el cambio ya se ve); solo si falla, por privado, para que se sepa
+            if error:
+                await self.avisar_discord(p["discord"], f"⚠️ No he podido {self.texto_accion(p)}: {error}")
+            log.info("Pendiente de %s (%s): %s", nombre, p["accion"], error or "hecho")
 
     async def _precargar(self):
         try:
@@ -489,7 +718,6 @@ class CobbleBot(discord.Client):
         self.monitor.change_interval(seconds=SEGUNDOS_MONITOR_CAIDO)
 
     async def _teams_tras_reinicio(self):
-        await self.preparar_teams_mc()
         await self.sincronizar_teams()
 
     def marcar_reinicio(self, quien: str):
@@ -541,13 +769,15 @@ class CobbleBot(discord.Client):
             await self.enviar(self.canal_estado, embed=e)
             self.monitor.change_interval(seconds=self.intervalo_monitor)
             log.info("Servidor de vuelta: avisado en Discord")
-            if self.teams:
-                asyncio.create_task(self._teams_tras_reinicio())
+            asyncio.create_task(self._teams_tras_reinicio())
         self._servidor_activo = True
         self._caido_desde = None
         self._reinicio_por = None
 
         actuales = set(nombres)
+        pendientes = {p["jugador"].lower() for p in self.registro.pendientes}
+        if pendientes & {n.lower() for n in actuales} and not self._lock_pendientes.locked():
+            asyncio.create_task(self.procesar_pendientes(actuales, actuales - (self._online_previo or set())))
         if self._online_previo is not None and self.avisar_entradas:
             for n in sorted(actuales - self._online_previo):
                 await self.enviar(self.canal_avisos, content=f"➡️ **{esc(n)}** ha entrado al servidor")
@@ -742,67 +972,111 @@ def embed_medallas(p: Perfil, region: str | None) -> discord.Embed:
     return e
 
 
-def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.Embed:
-    e = discord.Embed(
-        title="📖 Comandos de CobbleBOT",
-        description=("Al escribir un jugador te salen sugerencias (🟢 = conectado ahora). Para consultar datos puede "
-                     "estar desconectado; para recibir regalos o acciones de admin tiene que estar conectado."),
-        color=COLOR)
+def _cmd(comando: str, que: str) -> str:
+    """Una línea de la ayuda: el comando arriba y qué hace debajo."""
+    return f"**`{comando}`**\n╰ {que}"
 
-    def campo(nombre: str, lineas: list[str]):
-        e.add_field(name=nombre, inline=False, value="\n".join(lineas)[:1024])
 
-    campo("🖥️ Servidor", [
-        "`/estado` — si el servidor está online y cuánta gente hay",
-        "`/jugadores` — quién está conectado ahora mismo"])
-    campo("👤 Jugadores", [
-        "`/stats jugador` — ficha completa: horas, dinero, medallas, ligas, equipo, colección…",
-        "`/equipo jugador` — los 6 Pokémon del equipo y resumen del PC",
-        "`/medallas jugador [región]` — medallas por región y ligas conseguidas"])
-    cats = ", ".join(f"`{k}`" for k in bot.categorias)
-    campo("🏆 Rankings", [
-        "`/top categoría [región] [cantidad]` — ranking de jugadores (la región solo cuenta para medallas y ligas)",
-        f"Categorías: {cats}"])
-    campo("🛡️ Teams", [
-        "**1.** `/team vincular jugador` — estando conectado al servidor: te llega un código al chat del juego "
-        "(haz clic en él para copiarlo)",
-        "**2.** `/team confirmar codigo` — pega aquí ese código (caduca en 5 minutos)",
-        "**3.** `/team unirse team` — elige tu team: te da su rol de Discord y su `[etiqueta]` en el juego "
-        "(solo la primera vez; para cambiarte, pídeselo a un admin)",
-        "`/team info [team]` — miembros de cada team · `/team ranking categoría` — qué team va ganando",
-        "En el juego: `/teammsg mensaje` (o `/tm`) habla solo con tu team"])
+def paginas_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> dict[str, tuple[str, str, str, discord.Embed]]:
+    """Secciones de /help: clave -> (nombre, emoji, resumen, embed). Solo las que puede usar quien pregunta."""
+    paginas: dict[str, tuple[str, str, str, discord.Embed]] = {}
+
+    def pagina(clave: str, nombre: str, emoji: str, resumen: str, lineas: list[str], pie: str = ""):
+        e = discord.Embed(title=f"{emoji} {nombre}", description="\n\n".join(lineas)[:4096], color=COLOR)
+        e.set_footer(text=pie or "CobbleBOT · elige otra sección en la lista de abajo")
+        paginas[clave] = (nombre, emoji, resumen, e)
+
+    pagina("servidor", "Servidor", "🖥️", "Estado y quién está conectado", [
+        _cmd("/estado", "Si el servidor está online y cuánta gente hay"),
+        _cmd("/jugadores", "Quién está conectado ahora mismo")])
+    pagina("jugadores", "Jugadores", "👤", "Fichas, equipos y medallas", [
+        _cmd("/stats jugador", "Ficha completa: horas, dinero, medallas, ligas, equipo y colección"),
+        _cmd("/equipo jugador", "Los 6 Pokémon del equipo y un resumen del PC"),
+        _cmd("/medallas jugador [región]", "Medallas por región y ligas conseguidas")],
+        "Al escribir un jugador salen sugerencias · 🟢 = conectado ahora")
+    cats = " · ".join(f"`{k}`" for k in bot.categorias)
+    pagina("rankings", "Rankings", "🏆", "Quién va ganando", [
+        _cmd("/top categoría [región] [cantidad]", "Ranking de jugadores. La región solo cuenta para medallas y ligas"),
+        f"**Categorías**\n{cats}"])
+    pagina("vincular", "Vincular tu cuenta", "🔗", "Une tu Discord con tu jugador (una vez)", [
+        "Hazlo una vez y recibirás el rol de tu team y el de cada liga que ganes.",
+        _cmd("1 · /team vincular jugador", "Estando conectado al servidor: te llega un código al chat del juego "
+                                           "(haz clic en él para copiarlo)"),
+        _cmd("2 · /team confirmar codigo", "Pégalo aquí. Caduca en 5 minutos")])
+    pagina("teams", "Teams", "🛡️", "Crear, invitar, panel y ranking", [
+        "Los teams son los mismos en el juego (FTB Teams) y aquí: cada uno tiene su **rol** y su **[etiqueta]** "
+        "en el chat del juego.",
+        _cmd("/team crear nombre [color]", "Te sale un botón en el chat del juego para crearlo"),
+        _cmd("/team invitar usuario", "Dueño y oficiales: le llega la invitación con botones"),
+        _cmd("/team invitaciones", "Acepta o rechaza las tuyas"),
+        _cmd("/team panel", "Dueño y oficiales: ✏️ nombre · 🎨 color · 🏷️ etiqueta y emoji · ⚔️ fuego amigo · "
+                            "📨 invitar · 👢 echar · 🗑️ disolver"),
+        _cmd("/team salir", "Sal de tu team"),
+        _cmd("/team info [team]", "Miembros de cada team"),
+        _cmd("/team ranking categoría", "Qué team va ganando (suma de sus miembros)"),
+        _cmd("/team actualizar", "Ver ya los cambios hechos en el juego"),
+        "**En el juego:** `/tm mensaje` habla solo con tu team."],
+        "Si no estás conectado, crear, entrar o salir se hace en cuanto entres al servidor")
     canal = bot.ligas.canal or bot.canal_avisos
-    campo("🏅 Ligas", [
+    pagina("ligas", "Ligas", "🏅", "Anuncios y roles de campeón", [
         "Al vencer al campeón de una región, el bot lo anuncia" + (f" en <#{canal}>" if canal else "")
-        + " y, si tienes tu Discord vinculado, te da el rol de esa liga (tarda unos minutos)."])
+        + " y te da el rol de esa liga si tienes el Discord vinculado (tarda unos minutos)."])
     if regalar:
-        campo("🎁 Regalos", [
-            "`/dar pokemon jugador especie […]` — da un Pokémon. Opcional: nivel, shiny, sexo, naturaleza, "
-            "habilidad, IVs, EVs, movimientos, objeto, Poké Ball, mote, amistad, forma, teratipo, Dinamax, "
-            "Gigamax, tamaño…",
-            "`/dar dinero jugador cantidad` — da CobbleDollars",
-            "`/dar objeto jugador mod objeto [cantidad]` — elige el mod y busca el objeto por su nombre",
-            "El jugador tiene que estar conectado. Todo queda registrado."])
+        pagina("regalos", "Regalos", "🎁", "Pokémon, dinero y objetos (roles autorizados)", [
+            _cmd("/dar pokemon jugador especie […]", "Nivel, shiny, alfa, sexo, naturaleza, habilidad, IVs, EVs, "
+                                                     "movimientos, objeto, Poké Ball, mote, forma, teratipo, "
+                                                     "Dinamax, tamaño…"),
+            _cmd("/dar dinero jugador cantidad", "CobbleDollars"),
+            _cmd("/dar objeto jugador mod objeto [cantidad]", "Elige el mod y busca el objeto por su nombre")],
+            "El jugador tiene que estar conectado · todo queda registrado")
     if admin:
-        campo("🔧 Admins · servidor", [
-            "`/admin expulsar` · `banear`⚠️ · `desbanear` · `baneados` — moderación",
-            "`/admin whitelist` (desactivar⚠️) · `op` (dar⚠️) · `operadores` — acceso y permisos",
-            "`/admin modo` · `teletransportar` · `curar` · `experiencia` — jugadores",
-            "`/admin hora` · `clima` · `dificultad` · `guardar` · `reiniciar`⚠️ — mundo y servidor",
-            "`/admin mensaje` — en el chat, como título o encima de la hotbar, con colores "
-            "(`&6` dorado, `&c` rojo, `&a` verde, `&l` negrita…)",
-            "`/comando texto` — cualquier comando permitido (con sugerencias)",
-            "`/actualizar` — guarda el mundo y recarga los datos ya · `/diagnostico jugador` — qué encuentra el bot",
-            "⚠️ = pide confirmar con un botón antes de hacerlo"])
-        campo("🛡️ Admins · teams y ligas", [
-            "`/admin team-crear nombre [color] [etiqueta] [rol] [emoji] [fuego_amigo]` — sin `rol`, el bot crea uno",
-            "`/admin team-editar` · `team-borrar`⚠️ — cambiar o borrar un team",
-            "`/admin team usuario team` — meter, cambiar o sacar a alguien de un team",
-            "`/admin vincular usuario jugador` · `desvincular usuario` — vínculos a mano",
-            "`/admin ligas [canal] [region] [rol]` — canal de anuncios y rol de cada liga"])
-    e.set_footer(text=("Las respuestas de los comandos las ve todo el canal (los errores y /help, solo tú). "
-                       if not bot.privado else "") + "Los datos se actualizan cuando el servidor guarda el mundo.")
+        pagina("admin", "Alto mando · servidor", "🔒", "Moderación, mundo y servidor", [
+            _cmd("/admin expulsar · banear⚠️ · desbanear · baneados", "Moderación"),
+            _cmd("/admin whitelist · op⚠️ · operadores", "Acceso y permisos"),
+            _cmd("/admin modo · teletransportar · curar · experiencia", "Jugadores"),
+            _cmd("/admin hora · clima · dificultad · guardar · reiniciar⚠️", "Mundo y servidor"),
+            _cmd("/admin mensaje", "En el chat, como título o en la hotbar, con colores (`&6` dorado, `&c` rojo, "
+                                   "`&a` verde, `&l` negrita…)"),
+            _cmd("/comando texto", "Cualquier comando permitido, con sugerencias"),
+            _cmd("/actualizar · /diagnostico jugador", "Recargar los datos ya · qué encuentra el bot de alguien")],
+            "🔒 Solo lo ve el alto mando · ⚠️ = pide confirmar con un botón antes de hacerlo")
+        pagina("admin_teams", "Alto mando · teams y ligas", "🔒", "Cualquier team, vínculos y ligas", [
+            _cmd("/team panel team:…", "El panel de cualquier team: ➕ meter a alguien sin invitación y echar a "
+                                       "cualquiera menos al dueño"),
+            _cmd("/admin team-editar team […]", "Etiqueta, emoji, fuego amigo o usar otro rol de Discord"),
+            _cmd("/admin vincular · desvincular", "Vínculos Discord ↔ Minecraft a mano"),
+            _cmd("/admin ligas [canal] [región] [rol]", "Canal de anuncios y rol de cada liga")],
+            "🔒 Solo lo ve el alto mando")
+    return paginas
+
+
+def embed_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> discord.Embed:
+    """Portada de /help: qué hay en cada sección (se abren con la lista de abajo)."""
+    e = discord.Embed(title="📖 Ayuda de CobbleBOT",
+                      description="Elige una sección en la lista de abajo para ver sus comandos."
+                      + ("\n🔒 = secciones que solo ve el alto mando del servidor." if admin else ""), color=COLOR)
+    for nombre, emoji, resumen, _ in paginas_ayuda(bot, admin, regalar).values():
+        e.add_field(name=f"{emoji} {nombre}", value=resumen, inline=True)
+    e.set_footer(text=("Las respuestas de los comandos las ve todo el canal (los errores y /help, solo tú) · "
+                       if not bot.privado else "") + "Los datos se actualizan cuando el servidor guarda el mundo")
     return e
+
+
+class VistaAyuda(discord.ui.View):
+    """/help por secciones: una lista para saltar de una a otra."""
+
+    def __init__(self, bot: CobbleBot, admin: bool, regalar: bool):
+        super().__init__(timeout=900)
+        self.paginas = paginas_ayuda(bot, admin, regalar)
+        self.portada = embed_ayuda(bot, admin, regalar)
+        self.seccion.options = [discord.SelectOption(label="Inicio", value="inicio", emoji="📖")] + [
+            discord.SelectOption(label=nombre, value=clave, emoji=emoji, description=resumen[:100])
+            for clave, (nombre, emoji, resumen, _) in self.paginas.items()]
+
+    @discord.ui.select(placeholder="📚 Elige una sección…", options=[discord.SelectOption(label="-")])
+    async def seccion(self, i: discord.Interaction, sel: discord.ui.Select):
+        clave = sel.values[0]
+        await i.response.edit_message(embed=self.portada if clave == "inicio" else self.paginas[clave][3], view=self)
 
 
 # =================================================================== comandos
@@ -855,7 +1129,9 @@ def registrar_comandos(bot: CobbleBot):
     # ---- /help
     @tree.command(name="help", description="Lista de comandos del bot y cómo usarlos")
     async def ayuda(inter: discord.Interaction):
-        await inter.response.send_message(embed=embed_ayuda(bot, bot.es_admin(inter.user), bot.puede_regalar(inter.user)), ephemeral=True)
+        admin, regalar = bot.es_admin(inter.user), bot.puede_regalar(inter.user)
+        await inter.response.send_message(embed=embed_ayuda(bot, admin, regalar), view=VistaAyuda(bot, admin, regalar),
+                                          ephemeral=True)
 
     # ---- /estado
     @tree.command(name="estado", description="¿Está el servidor online y cuánta gente hay?")
@@ -1437,6 +1713,7 @@ def registrar_comandos(bot: CobbleBot):
         especie="Especie del Pokémon",
         nivel="Nivel (1-100, por defecto 5)",
         shiny="¿Shiny?",
+        alfa="¿Alfa? (más grande, más fuerte y con un movimiento MT extra)",
         genero="Sexo",
         naturaleza="Naturaleza",
         habilidad="Habilidad (elige primero la especie)",
@@ -1465,6 +1742,7 @@ def registrar_comandos(bot: CobbleBot):
                                movimientos=ac_movimientos, forma=ac_forma, pokeball=ac_ball)
     async def dar_pokemon(inter: discord.Interaction, jugador: str, especie: str,
                           nivel: app_commands.Range[int, 1, 100] = 5, shiny: bool = False,
+                          alfa: bool = False,
                           genero: app_commands.Choice[str] | None = None,
                           naturaleza: app_commands.Choice[str] | None = None,
                           habilidad: str | None = None, ivs: str | None = None, evs: str | None = None,
@@ -1488,6 +1766,8 @@ def registrar_comandos(bot: CobbleBot):
         detalles = [f"Nv. {nivel}"]
         if shiny:
             props.append("shiny=yes"); detalles.append("✨ shiny")
+        if alfa:   # Pokémon Alfa (Cobblemon 1.8+): propiedad "alpha"
+            props.append("alpha=yes"); detalles.append("🔴 alfa")
         if genero:
             props.append(f"gender={genero.value}"); detalles.append(genero.name)
         if naturaleza:
@@ -1723,33 +2003,23 @@ def componente_copiar(texto: str) -> dict:
 
 def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_commands.Group,
                     ac_jugador, ac_categoria):
-    opciones_color = [app_commands.Choice(name=n, value=v) for v, n in COLORES.items()]
+    SIN_TEAMS = ("Todavía no hay teams. Se crean **dentro del juego** con FTB Teams (botón de FTB Teams en el "
+                 "inventario) y salen aquí en unos minutos, o al momento con `/team actualizar`.")
 
     async def ac_team(inter: discord.Interaction, actual: str):
         a = actual.lower()
         return [app_commands.Choice(name=t.titulo[:100], value=tid) for tid, t in bot.teams.items()
-                if a in t.nombre.lower() or a in tid][:25]
-
-    async def ac_team_o_ninguno(inter: discord.Interaction, actual: str):
-        return ([app_commands.Choice(name="Sin team", value="-")] if "sin team".startswith(actual.lower()) else []) \
-            + (await ac_team(inter, actual))[:24]
-
-    async def ac_team_discord(inter: discord.Interaction, actual: str):
-        return [c for c in await ac_team(inter, actual) if bot.teams[c.value].desde_discord]
+                if a in t.nombre.lower()][:25]
 
     async def team_o_error(inter: discord.Interaction, team: str) -> Team | None:
         t = bot.teams.get(team) or next((t for t in bot.teams.values() if t.nombre.lower() == team.lower()), None)
         if not t:
-            msg = ("Todavía no hay teams: un admin puede crearlos con `/admin team-crear`." if not bot.teams
-                   else f"No existe el team «{esc(team)}». Elígelo de la lista.")
+            msg = SIN_TEAMS if not bot.teams else f"No existe el team «{esc(team)}». Elígelo de la lista."
             await inter.response.send_message(msg, ephemeral=True)
         return t
 
-    grupo = app_commands.Group(name="team", description="Teams del servidor: vincula tu cuenta, únete y compite",
+    grupo = app_commands.Group(name="team", description="Teams del servidor (FTB Teams): vincula tu cuenta y compite",
                                guild_only=True)
-
-    def miembro_de(inter: discord.Interaction) -> discord.Member | None:
-        return inter.user if isinstance(inter.user, discord.Member) else None
 
     async def ac_vincular(inter: discord.Interaction, actual: str):
         """Los jugadores de siempre, menos los que ya tienen su Discord vinculado."""
@@ -1794,41 +2064,26 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
         async with bot.registro.lock:
             bot.registro.vincular(inter.user.id, jugador, uuid_mc)
         log.info("%s vinculado con el jugador %s", inter.user, jugador)
-        await bot.sincronizar_teams()   # si ya tenía rol de team en Discord, se aplica en el juego
+        await bot.sincronizar_teams()   # si ya está en un team de FTB, recibe su rol
         if bot.perfiles:
             await bot.poner_roles_ligas(await bot.perfiles.todos())   # y los roles de las ligas que ya tenga
-        team = bot.registro.team_de(inter.user.id)
-        extra = (f" Ya estás en **{bot.teams[team].titulo}**." if team in bot.teams
-                 else " Ahora elige tu team con `/team unirse`.")
+        t = bot.team_de_discord(inter.user.id)
+        extra = (f" Estás en el team **{esc(t.titulo)}**: ya tienes su rol." if t else
+                 " Para tener team, créalo o únete a uno **dentro del juego** con FTB Teams.")
         await inter.followup.send(f"✅ Tu Discord queda vinculado con **{esc(jugador)}**.{extra}", ephemeral=bot.privado)
 
-    @grupo.command(name="unirse", description="Elige tu team (solo la primera vez; para cambiar, pídeselo a un admin)")
-    @app_commands.describe(team="El team al que te unes")
-    @app_commands.autocomplete(team=ac_team)
-    async def team_unirse(inter: discord.Interaction, team: str):
-        elegido = await team_o_error(inter, team)
-        if not elegido:
-            return
-        miembro = miembro_de(inter)
-        if not miembro or not bot.registro.jugador_de(inter.user.id):
-            await inter.response.send_message("Primero vincula tu cuenta de Minecraft con `/team vincular`.",
+    @grupo.command(name="actualizar", description="Copia ya a Discord los cambios de teams hechos en el juego")
+    async def team_actualizar(inter: discord.Interaction):
+        espera = 60 - (time.time() - bot._ultima_actualizacion_teams)
+        if espera > 0 and not bot.es_admin(inter.user):
+            await inter.response.send_message(f"Se acaba de actualizar. Prueba otra vez en {int(espera) + 1} s.",
                                               ephemeral=True)
             return
-        roles = bot.roles_teams(miembro.guild)
-        actual = bot.registro.team_de(inter.user.id) or next(
-            (tid for tid, r in roles.items() if r and r in miembro.roles), None)
-        if actual:
-            await inter.response.send_message(
-                f"Ya estás en **{bot.teams[actual].titulo}**. Para cambiarte, pídeselo a un admin.", ephemeral=True)
-            return
+        bot._ultima_actualizacion_teams = time.time()
         await inter.response.defer(ephemeral=bot.privado)
-        problemas = await bot.cambiar_team(miembro, elegido.id)
-        t = elegido
-        await inter.followup.send(f"🛡️ ¡Bienvenido a **{t.titulo}**!" + "".join(f"\n⚠️ {p}" for p in problemas),
-                                  ephemeral=bot.privado)
-        await bot.enviar(bot.canal_registro, embed=discord.Embed(
-            description=f"🛡️ **{inter.user}** ({esc(bot.registro.jugador_de(inter.user.id))}) se unió a {t.titulo}",
-            color=0x555555, timestamp=datetime.now(timezone.utc)))
+        await bot.sincronizar_teams(guardar_antes=True)
+        lista = ", ".join(f"**{esc(t.titulo)}** ({len(t.miembros)})" for t in bot.teams.values())
+        await inter.followup.send(f"🔄 Teams al día: {lista}" if lista else SIN_TEAMS, ephemeral=bot.privado)
 
     @grupo.command(name="info", description="Miembros de cada team (o de uno)")
     @app_commands.describe(team="Solo este team (opcional)")
@@ -1838,25 +2093,26 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
         if team and not uno:
             return
         if not bot.teams:
-            await inter.response.send_message("Todavía no hay teams: un admin puede crearlos con `/admin team-crear`.",
-                                              ephemeral=True)
+            await inter.response.send_message(SIN_TEAMS, ephemeral=True)
             return
-        ids = [uno.id] if uno else list(bot.teams)
-        e = discord.Embed(title="🛡️ Teams" if not uno else f"🛡️ {uno.titulo}", color=COLOR)
+        teams = [uno] if uno else list(bot.teams.values())
+        e = discord.Embed(title="🛡️ Teams" if not uno else f"🛡️ {uno.titulo}",
+                          color=uno.color_int if uno else COLOR)
         if uno:
-            rol = bot.roles_teams(inter.guild).get(uno.id) if inter.guild else None
-            e.description = (f"Rol: {rol.mention if rol else '—'} · Color: **{COLORES.get(uno.color, uno.color)}** · "
-                             f"En el chat: `[{uno.etiqueta or uno.nombre}] Jugador` · "
+            rol = bot.rol_de(inter.guild, uno) if inter.guild else None
+            lider = bot._nombres.get(uno.lider, "—")
+            e.description = (f"Líder: **{esc(lider)}** · Rol: {rol.mention if rol else '—'} · "
+                             f"Color: `{uno.color}` · En el chat: `[{uno.etiqueta or uno.nombre}] Jugador` · "
                              f"Fuego amigo: **{'sí' if uno.fuego_amigo else 'no'}**")
-        for tid in ids[:25]:
-            t = bot.teams[tid]
-            miembros = bot.registro.miembros(tid)
-            lista = "\n".join(f"<@{d}> · {esc(n)}" for d, n in miembros) if uno else \
-                ", ".join(esc(n) for _, n in miembros)
-            e.add_field(name=f"{t.titulo} ({len(miembros)})", value=(lista or "Sin miembros todavía")[:1024],
-                        inline=not uno)
-        if not bot.registro.jugador_de(inter.user.id):
-            e.set_footer(text="¿Aún no estás en ninguno? /team vincular y luego /team unirse")
+        for t in teams[:25]:
+            filas = []
+            for u in t.miembros:
+                n = bot._nombres.get(u, u[:8])
+                did = bot.registro.discord_de(n)
+                filas.append(f"{'👑 ' if u == t.lider else ''}{esc(n)}" + (f" · <@{did}>" if did and uno else ""))
+            e.add_field(name=f"{t.titulo} ({len(t.miembros)})",
+                        value=("\n" if uno else ", ").join(filas)[:1024] or "Sin miembros", inline=not uno)
+        e.set_footer(text="Los teams se gestionan en el juego con FTB Teams · /team actualizar para verlos ya")
         await inter.response.send_message(embed=e, ephemeral=bot.privado)
 
     @grupo.command(name="ranking", description="Qué team va ganando: suma de sus miembros")
@@ -1870,265 +2126,688 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
             await inter.response.send_message("Esa categoría no existe. Elígela de la lista.", ephemeral=True)
             return
         if not bot.teams:
-            await inter.response.send_message("Todavía no hay teams: un admin puede crearlos con `/admin team-crear`.",
-                                              ephemeral=True)
+            await inter.response.send_message(SIN_TEAMS, ephemeral=True)
             return
         await inter.response.defer()
         reg = region.value if (region and cat.por_region) else None
-        perfiles = {p.nombre.lower(): p for p in await bot.perfiles.todos()}
+        perfiles = {p.uuid.lower(): p for p in await bot.perfiles.todos()}
         filas = []
-        for tid, t in bot.teams.items():
-            miembros = [perfiles[n.lower()] for _, n in bot.registro.miembros(tid) if n.lower() in perfiles]
+        for t in bot.teams.values():
+            miembros = [perfiles[u] for u in t.miembros if u in perfiles]
             total = sum(cat.valor(p, reg) for p in miembros)
             mejor = max(miembros, key=lambda p: cat.valor(p, reg), default=None)
-            filas.append((total, t, len(bot.registro.miembros(tid)), mejor))
+            filas.append((total, t, len(t.miembros), mejor))
         filas.sort(key=lambda f: f[0], reverse=True)
         medallas = ["🥇", "🥈", "🥉"]
         titulo = cat.titulo + (f" de {reg.capitalize()}" if reg else "")
         e = discord.Embed(title=f"🛡️ Ranking de teams — {titulo}", color=COLOR)
         e.description = "\n".join(
-            f"{medallas[i] if i < 3 else f'**{i + 1}.**'} **{t.titulo}** — {cat.formato(total)}"
+            f"{medallas[i] if i < 3 else f'**{i + 1}.**'} **{esc(t.titulo)}** — {cat.formato(total)}"
             f" · {n} miembro{'s' if n != 1 else ''}"
             + (f" · MVP: {esc(mejor.nombre)}" if mejor and cat.valor(mejor, reg) > 0 else "")
             for i, (total, t, n, mejor) in enumerate(filas))
-        e.set_footer(text="Suma de los miembros vinculados de cada team")
+        e.set_footer(text="Suma de todos los miembros de cada team de FTB")
         await inter.followup.send(embed=e)
 
-    tree.add_command(grupo)
+    # ---- panel del team: el dueño y los oficiales de FTB (y los admins, de cualquier team)
+    def uuid_de_usuario(did) -> str | None:
+        u = bot.registro.uuid_de(did)
+        if not u:
+            j = (bot.registro.jugador_de(did) or "").lower()
+            u = next((x for x, n in bot._nombres.items() if n.lower() == j), None) if j else None
+        return u
 
-    # ---- gestión de teams para admins (dentro de /admin)
-    @admin.command(name="team", description="Pone o quita el team de un usuario (Discord y Minecraft)")
-    @app_commands.describe(usuario="Usuario de Discord", team="Team (o 'Sin team' para quitarlo)")
-    @app_commands.autocomplete(team=ac_team_o_ninguno)
-    async def adm_team(inter: discord.Interaction, usuario: discord.Member, team: str):
-        if not bot.es_admin(inter.user):
-            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+    def puede_panel(usuario, t: Team) -> bool:
+        return bot.es_admin(usuario) or t.puede_gestionar(uuid_de_usuario(usuario.id))
+
+    def embed_panel(t: Team) -> discord.Embed:
+        e = discord.Embed(title=f"⚙️ Panel del team {t.titulo}", color=t.color_int)
+        e.add_field(name="Nombre", value=esc(t.nombre))
+        e.add_field(name="Color", value=f"`{t.color}`")
+        e.add_field(name="En el chat", value=f"`[{t.etiqueta or t.nombre}] Jugador`")
+        e.add_field(name="Emoji", value=t.emoji or "—")
+        e.add_field(name="Fuego amigo", value="sí" if t.fuego_amigo else "no")
+        filas = [("👑 " if u == t.lider else "⭐ " if u in t.oficiales else "") + esc(bot._nombres.get(u, u[:8]))
+                 for u in t.miembros]
+        e.add_field(name=f"Miembros ({len(t.miembros)})", value="\n".join(filas)[:1024] or "—", inline=False)
+        invs = bot.registro.invitaciones_de_team(t.id)
+        if invs:
+            e.add_field(name=f"📨 Invitaciones sin responder ({len(invs)})",
+                        value=", ".join(f"<@{x['para']}>" for x in invs)[:1024], inline=False)
+        pend = [p for p in bot.registro.pendientes if p.get("team") == t.id]
+        if pend:
+            e.add_field(name="⏳ Al conectarse al servidor",
+                        value="\n".join(f"{esc(p['jugador'])}: {'entra' if p['accion'] == 'unir' else 'sale'}"
+                                        for p in pend)[:1024], inline=False)
+        e.set_footer(text="👑 dueño · ⭐ oficial · El nombre y el color se cambian también en FTB Teams (en el juego)")
+        return e
+
+    ftb = bot.ftb_cmd
+
+    async def pedir(p: dict) -> tuple[bool, str | None]:
+        """(ya hecho en el juego, error). Si no está conectado, queda pendiente para cuando entre."""
+        estado, error = await bot.pedir_en_juego(p)
+        return estado == "hecho", error
+
+    # ---- invitaciones desde Discord: botones que siguen funcionando aunque el bot se reinicie
+    class BotonInvitacion(discord.ui.DynamicItem[discord.ui.Button],
+                          template=r"cbteam:inv:(?P<si>[01]):(?P<tid>[0-9a-f-]{36}):(?P<para>\d+)"):
+        def __init__(self, si: bool, tid: str, para: str, etiqueta: str | None = None):
+            super().__init__(discord.ui.Button(
+                label=etiqueta or ("Aceptar" if si else "Rechazar"), emoji="✅" if si else "✖️",
+                style=discord.ButtonStyle.success if si else discord.ButtonStyle.secondary,
+                custom_id=f"cbteam:inv:{int(si)}:{tid}:{para}"))
+            self.si, self.tid, self.para = si, tid, para
+
+        @classmethod
+        async def from_custom_id(cls, interaction, item, match):
+            return cls(match["si"] == "1", match["tid"], match["para"])
+
+        async def callback(self, i: discord.Interaction):
+            await responder_invitacion(i, self.tid, self.para, self.si)
+
+    bot.add_dynamic_items(BotonInvitacion)
+
+    def vista_invitacion(tid: str, para) -> discord.ui.View:
+        v = discord.ui.View(timeout=None)
+        v.add_item(BotonInvitacion(True, tid, str(para)))
+        v.add_item(BotonInvitacion(False, tid, str(para)))
+        return v
+
+    async def responder_invitacion(i: discord.Interaction, tid: str, para: str, si: bool):
+        if str(i.user.id) != para:
+            await i.response.send_message("Esta invitación no es para ti.", ephemeral=True)
             return
-        if team in ("-", "Sin team"):
-            nuevo = None
-        else:
+        inv = next((x for x in bot.registro.invitaciones_para(para) if x["team"] == tid), None)
+        t = bot.teams.get(tid)
+        if not inv or not t:
+            if inv:
+                async with bot.registro.lock:
+                    bot.registro.quitar_invitacion(tid, para)
+            await i.response.send_message("Esta invitación ya no vale (caducada, cancelada, ya respondida o el team "
+                                          "ya no existe).", ephemeral=True)
+            return
+        if not si:
+            async with bot.registro.lock:
+                bot.registro.quitar_invitacion(tid, para)
+            await i.response.send_message(f"Has rechazado la invitación a **{esc(t.titulo)}**.", ephemeral=True)
+            await quitar_botones(i)
+            return
+        jugador = bot.registro.jugador_de(i.user.id)
+        if not jugador:
+            await i.response.send_message("Antes tienes que vincular tu cuenta de Minecraft: `/team vincular` "
+                                          "(estando conectado al servidor). La invitación sigue en pie.", ephemeral=True)
+            return
+        actual = bot.team_de_discord(i.user.id)
+        if actual and actual.id == tid:
+            async with bot.registro.lock:
+                bot.registro.quitar_invitacion(tid, para)
+            await i.response.send_message(f"Ya estás en **{esc(t.titulo)}**.", ephemeral=True)
+            return
+        await i.response.defer(ephemeral=True, thinking=True)
+        async with bot.registro.lock:
+            bot.registro.quitar_invitacion(tid, para)
+        hecho, error = await pedir({"accion": "unir", "discord": str(i.user.id), "jugador": jugador,
+                                                 "team": tid})
+        if error:
+            await i.followup.send(f"⚠️ No he podido meterte en **{esc(t.titulo)}**: {error}", ephemeral=True)
+            return
+        cambio = f" (saldrás de **{esc(actual.titulo)}**)" if actual else ""
+        await i.followup.send(f"✅ ¡Ya estás en **{esc(t.titulo)}**! Tienes su rol y su etiqueta en el juego." if hecho else
+                              f"✅ Invitación aceptada. Entrarás en **{esc(t.titulo)}** en cuanto te conectes al "
+                              f"servidor{cambio}.", ephemeral=True)
+        await registrar_cambio(f"aceptó la invitación al team **{esc(t.titulo)}**", i.user)
+        await quitar_botones(i)
+
+    async def quitar_botones(i: discord.Interaction):
+        """La invitación ya está respondida: fuera los botones del mensaje (si se puede)."""
+        try:
+            if i.message and i.message.author == bot.user:
+                await i.message.edit(view=None)
+        except discord.HTTPException:
+            pass
+
+    async def invitar_a(i: discord.Interaction, t: Team, miembro) -> str:
+        """Invita desde Discord. Devuelve el texto para quien invita."""
+        if miembro.bot:
+            return "❌ No se puede invitar a un bot."
+        if miembro.id == i.user.id:
+            return "❌ No te puedes invitar a ti mismo."
+        su_team = bot.team_de_discord(miembro.id)
+        if su_team and su_team.id == t.id:
+            return f"❌ {miembro.mention} ya está en el team."
+        async with bot.registro.lock:
+            bot.registro.invitar(t.id, i.user.id, miembro.id)
+        texto = (f"📨 **{i.user.display_name}** te invita al team **{t.titulo}** de COBBLEVERSE."
+                 + (f"\n(Ahora estás en **{su_team.titulo}**: si aceptas, te cambias de team.)" if su_team else "")
+                 + ("" if bot.registro.jugador_de(miembro.id) else
+                    "\nPara aceptar, antes vincula tu cuenta de Minecraft con `/team vincular` en el servidor de Discord.")
+                 + "\nSi no estás conectado al juego, entrarás al team en cuanto te conectes. Caduca en 7 días.")
+        e = discord.Embed(description=texto, color=t.color_int)
+        donde = "por mensaje privado"
+        try:
+            await miembro.send(embed=e, view=vista_invitacion(t.id, miembro.id))
+        except discord.HTTPException:
+            donde = "en este canal (tiene los mensajes privados cerrados)"
+            try:
+                await i.channel.send(content=miembro.mention, embed=e, view=vista_invitacion(t.id, miembro.id))
+            except (discord.HTTPException, AttributeError):
+                donde = "sin aviso (no he podido escribirle): que use `/team invitaciones`"
+        await registrar_cambio(f"invitó a {miembro.mention} al team **{esc(t.titulo)}**", i.user)
+        return f"📨 Invitación enviada a {miembro.mention} {donde}. También la ve con `/team invitaciones`."
+
+    class ModalNombreColor(discord.ui.Modal, title="Nombre del team"):
+        def __init__(self, panel: "PanelTeam", t: Team):
+            super().__init__()
+            self.panel = panel
+            self.nombre = discord.ui.TextInput(label="Nombre", default=t.nombre[:32], min_length=1, max_length=32)
+            self.add_item(self.nombre)
+
+        async def on_submit(self, i: discord.Interaction):
+            t = self.panel.team()
+            nombre = nombre_team_valido(self.nombre.value)
+            if not t or not nombre:
+                await i.response.send_message("❌ " + ("Ese team ya no existe." if not t else "Nombre vacío."),
+                                              ephemeral=True)
+                return
+            await i.response.defer()
+            f = await ftb(comando_ftb(t, "display_name", nombre)) if nombre != t.nombre else None
+            await bot.sincronizar_teams(guardar_antes=True)
+            if not f:
+                await registrar_cambio(f"cambió el nombre del team a **{esc(nombre)}** desde el panel", i.user)
+            await self.panel.refrescar(i, f"⚠️ {f}" if f else "✅ Guardado en FTB Teams y en Discord.")
+
+    # ---- selector de color: lista de colores con su cuadrado, o #hex a mano, con vista previa del color
+    def vista_previa(color: str, t: Team) -> tuple[discord.Embed, discord.File]:
+        e = discord.Embed(title=f"🎨 Vista previa: {color}", color=int(color[1:], 16),
+                          description=f"Así se verá el color de **{esc(t.titulo)}** (rol de Discord y `[etiqueta]` en "
+                                      "el juego). Si te gusta, pulsa **Aplicar**.")
+        e.set_thumbnail(url="attachment://color.png")
+        return e, discord.File(io.BytesIO(png_color(color)), filename="color.png")
+
+    class ModalHex(discord.ui.Modal, title="Color en hexadecimal"):
+        hex_ = discord.ui.TextInput(label="Color (#RRGGBB)", min_length=6, max_length=7,
+                                    placeholder="Por ejemplo #FF5555 (búscalo con el botón 🌐)")
+
+        def __init__(self, selector: "SelectorColor"):
+            super().__init__()
+            self.selector = selector
+
+        async def on_submit(self, i: discord.Interaction):
+            color = color_de(self.hex_.value)
+            if not color:
+                await i.response.send_message("❌ Ese color no vale: tiene que ser como #FF5555.", ephemeral=True)
+                return
+            await self.selector.mostrar(i, color)
+
+    class SelectorColor(discord.ui.View):
+        def __init__(self, panel: "PanelTeam", autor_id: int):
+            super().__init__(timeout=600)
+            self.panel, self.autor_id, self.color = panel, autor_id, None
+            self.lista.options = [discord.SelectOption(label=n.capitalize(), value=h, description=h,
+                                                       emoji=EMOJI_COLOR.get(n)) for n, h in COLORES_TEAM.items()]
+            self.add_item(discord.ui.Button(label="Buscar un color", emoji="🌐", row=1,
+                                            url="https://htmlcolorcodes.com/color-picker/"))
+
+        async def interaction_check(self, i: discord.Interaction) -> bool:
+            t = self.panel.team()
+            if i.user.id != self.autor_id or not t or not puede_panel(i.user, t):
+                await i.response.send_message("❌ No puedes cambiar el color de este team.", ephemeral=True)
+                return False
+            return True
+
+        async def mostrar(self, i: discord.Interaction, color: str):
+            self.color = color
+            self.aplicar.disabled = False
+            e, archivo = vista_previa(color, self.panel.team())
+            await i.response.edit_message(content=None, embed=e, attachments=[archivo], view=self)
+
+        @discord.ui.select(placeholder="🎨 Elige un color…", row=0, options=[discord.SelectOption(label="-")])
+        async def lista(self, i: discord.Interaction, sel: discord.ui.Select):
+            await self.mostrar(i, sel.values[0])
+
+        @discord.ui.button(label="Escribir #hex", emoji="✏️", style=discord.ButtonStyle.secondary, row=1)
+        async def escribir(self, i: discord.Interaction, _):
+            await i.response.send_modal(ModalHex(self))
+
+        @discord.ui.button(label="Aplicar", emoji="✅", style=discord.ButtonStyle.success, row=1, disabled=True)
+        async def aplicar(self, i: discord.Interaction, _):
+            t = self.panel.team()
+            await i.response.edit_message(content="⏳ Aplicando…", view=None)
+            f = await ftb(comando_ftb(t, "color", self.color)) if self.color != t.color else None
+            await bot.sincronizar_teams(guardar_antes=True)
+            if not f:
+                await registrar_cambio(f"cambió el color del team **{esc(t.titulo)}** a `{self.color}`", i.user)
+            await i.edit_original_response(content=f"⚠️ {f}" if f else f"✅ Color `{self.color}` aplicado en FTB Teams "
+                                           "y en Discord.")
+            self.stop()
+            if self.panel.inter:     # el panel se pone al día con el color nuevo
+                await self.panel.refrescar(self.panel.inter)
+
+    class ModalEtiqueta(discord.ui.Modal, title="Etiqueta y emoji"):
+        def __init__(self, panel: "PanelTeam", t: Team):
+            super().__init__()
+            self.panel = panel
+            # Discord: label de 45 caracteres como mucho; la explicación va en el placeholder
+            self.etiqueta = discord.ui.TextInput(label="Etiqueta [ ] del chat", default=t.etiqueta, required=False,
+                                                 max_length=24, placeholder="Vacío = el nombre del team")
+            self.emoji = discord.ui.TextInput(label="Emoji para Discord", default=t.emoji, required=False,
+                                              max_length=8, placeholder="Vacío = sin emoji")
+            self.add_item(self.etiqueta)
+            self.add_item(self.emoji)
+
+        async def on_submit(self, i: discord.Interaction):
+            t = self.panel.team()
+            if not t:
+                await i.response.send_message("❌ Ese team ya no existe.", ephemeral=True)
+                return
+            await i.response.defer()
+            t.etiqueta = etiqueta_de(self.etiqueta.value) if self.etiqueta.value.strip() else ""
+            t.emoji = self.emoji.value.strip()
+            async with bot.registro.lock:
+                bot.registro.guardar_extras(t)
+            await bot.sincronizar_teams()
+            await registrar_cambio(f"cambió etiqueta/emoji del team **{esc(t.titulo)}** desde el panel", i.user)
+            await self.panel.refrescar(i, "✅ Guardado.")
+
+    class SelectEchar(discord.ui.Select):
+        def __init__(self, opciones: list[discord.SelectOption]):
+            vacio = not opciones     # se ve siempre; si no hay a quién echar, sale desactivado y lo explica
+            super().__init__(placeholder="👢 No hay nadie a quien puedas echar" if vacio else
+                             "👢 Echar a un miembro del team…", row=1, disabled=vacio,
+                             options=opciones or [discord.SelectOption(label="—", value="-")])
+
+        async def callback(self, i: discord.Interaction):
+            panel: PanelTeam = self.view
+            t = panel.team()
+            uuid = self.values[0]
+            nombre = bot._nombres.get(uuid)
+            if not t or uuid not in t.miembros or not nombre or not panel.puede_echar(i.user, t, uuid):
+                await i.response.send_message("❌ No puedes echar a ese jugador.", ephemeral=True)
+                return
+            await i.response.defer()
+            f = await ftb(f"ftbteams force-remove {t.id_corto} {nombre}")
+            aviso = f"✅ {esc(nombre)} ya no está en el team."
+            if f:
+                # Puede que FTB no deje si no está conectado: entonces se hace en cuanto entre
+                hecho, f2 = await pedir({"accion": "echar", "discord": bot.registro.discord_de(nombre) or "",
+                                                      "jugador": nombre, "team": t.id})
+                aviso = (f"⚠️ No he podido echar a {esc(nombre)}: {f2 or f}" if hecho and f2 else
+                         f"⏳ {esc(nombre)} no está conectado: lo saco del team en cuanto entre al servidor." if not hecho
+                         else aviso)
+            else:
+                await bot.sincronizar_teams(guardar_antes=True)
+            if not aviso.startswith("⚠️"):
+                await registrar_cambio(f"echó a **{esc(nombre)}** del team **{esc(t.titulo)}** desde el panel", i.user)
+            await panel.refrescar(i, aviso)
+
+    class SelectInvitar(discord.ui.UserSelect):
+        def __init__(self):
+            super().__init__(placeholder="📨 Invitar a alguien de Discord…", row=2)
+
+        async def callback(self, i: discord.Interaction):
+            panel: PanelTeam = self.view
+            t = panel.team()
+            await i.response.defer()
+            texto = await invitar_a(i, t, self.values[0]) if t else "❌ Ese team ya no existe."
+            await panel.refrescar(i, texto)
+
+    class SelectMeter(discord.ui.UserSelect):
+        """Solo admins: mete a alguien en el team sin invitación (si no está conectado, al entrar)."""
+        def __init__(self):
+            super().__init__(placeholder="➕ (Admin) Meter a alguien directamente…", row=4)
+
+        async def callback(self, i: discord.Interaction):
+            panel: PanelTeam = self.view
+            t = panel.team()
+            m = self.values[0]
+            if not bot.es_admin(i.user):
+                await i.response.send_message("Solo los admins pueden meter gente sin invitación.", ephemeral=True)
+                return
+            jugador = bot.registro.jugador_de(m.id)
+            if not t or not jugador:
+                await i.response.send_message("❌ " + ("Ese team ya no existe." if not t else
+                                              f"{m.mention} no tiene el Discord vinculado con Minecraft: vincúlalo antes "
+                                              "con `/admin vincular`."), ephemeral=True)
+                return
+            await i.response.defer()
+            hecho, error = await pedir({"accion": "unir", "discord": str(m.id), "jugador": jugador, "team": t.id})
+            if not error:
+                async with bot.registro.lock:
+                    bot.registro.quitar_invitacion(t.id, m.id)
+                await registrar_cambio(f"metió a {m.mention} ({esc(jugador)}) en el team **{esc(t.titulo)}** "
+                                       "desde el panel", i.user)
+            await panel.refrescar(i, f"⚠️ No he podido meter a {esc(jugador)}: {error}" if error else
+                                  f"✅ {esc(jugador)} ya está en el team." if hecho else
+                                  f"⏳ {esc(jugador)} no está conectado: entra al team en cuanto se conecte.")
+
+    class SelectCancelarInvitacion(discord.ui.Select):
+        def __init__(self, invitaciones: list[dict]):
+            opciones = []
+            for x in invitaciones[:25]:
+                m = bot.get_user(int(x["para"]))
+                opciones.append(discord.SelectOption(label=(m.display_name if m else x["para"])[:100], value=x["para"]))
+            super().__init__(placeholder="✖️ Cancelar una invitación…", options=opciones, row=3)
+
+        async def callback(self, i: discord.Interaction):
+            panel: PanelTeam = self.view
+            await i.response.defer()
+            async with bot.registro.lock:
+                bot.registro.quitar_invitacion(panel.tid, self.values[0])
+            await panel.refrescar(i, f"✖️ Invitación a <@{self.values[0]}> cancelada.")
+
+    class ConfirmarDisolver(discord.ui.View):
+        def __init__(self, panel: "PanelTeam"):
+            super().__init__(timeout=60)
+            self.panel = panel
+
+        @discord.ui.button(label="Sí, disolver el team", style=discord.ButtonStyle.danger)
+        async def si(self, i: discord.Interaction, _):
+            t = self.panel.team()
+            if not t or not (bot.es_admin(i.user) or uuid_de_usuario(i.user.id) == t.lider):
+                await i.response.edit_message(content="❌ No puedes disolver este team.", view=None)
+                return
+            await i.response.edit_message(content="⏳ Disolviendo…", view=None)
+            f = await ftb(f"ftbteams force-disband {t.id_corto}")
+            if not f:
+                await bot.sincronizar_teams(guardar_antes=True)
+                await registrar_cambio(f"disolvió el team **{esc(t.titulo)}** desde el panel", i.user)
+            await i.edit_original_response(content=f"⚠️ No he podido disolverlo: {f}" if f else
+                                           f"🗑️ El team **{esc(t.titulo)}** ya no existe.")
+
+        @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+        async def no(self, i: discord.Interaction, _):
+            await i.response.edit_message(content="No se ha disuelto nada.", view=None)
+
+    class PanelTeam(discord.ui.View):
+        def __init__(self, autor, tid: str, inter: discord.Interaction | None = None):
+            super().__init__(timeout=900)
+            self.autor_id, self.tid = autor.id, tid
+            self.inter = inter      # la interacción cuyo mensaje es este panel (para ponerlo al día desde fuera)
+            t = self.team()
+            if not t:
+                return
+            self.fuego.label = f"Fuego amigo: {'sí' if t.fuego_amigo else 'no'}"
+            self.fuego.style = discord.ButtonStyle.danger if t.fuego_amigo else discord.ButtonStyle.secondary
+            echables = [u for u in t.miembros if u in bot._nombres and self.puede_echar(autor, t, u)]
+            self.add_item(SelectEchar([discord.SelectOption(label=bot._nombres[u], value=u,
+                                                            emoji="⭐" if u in t.oficiales else None)
+                                       for u in echables[:25]]))
+            self.add_item(SelectInvitar())
+            invitaciones = bot.registro.invitaciones_de_team(tid)
+            if invitaciones:
+                self.add_item(SelectCancelarInvitacion(invitaciones))
+            if bot.es_admin(autor):
+                self.add_item(SelectMeter())
+            if not (bot.es_admin(autor) or uuid_de_usuario(autor.id) == t.lider):
+                self.remove_item(self.disolver)     # disolver: solo el dueño (o un admin)
+
+        def team(self) -> Team | None:
+            return bot.teams.get(self.tid)
+
+        def puede_echar(self, usuario, t: Team, uuid: str) -> bool:
+            yo = uuid_de_usuario(usuario.id)
+            if uuid == t.lider or uuid == yo:
+                return False     # al dueño no se le echa; uno mismo sale desde el juego
+            return bot.es_admin(usuario) or yo == t.lider or uuid not in t.oficiales
+
+        async def interaction_check(self, i: discord.Interaction) -> bool:
+            t = self.team()
+            if i.user.id != self.autor_id:
+                await i.response.send_message("Este panel es de otra persona: abre el tuyo con `/team panel`.",
+                                              ephemeral=True)
+                return False
+            if not t or not puede_panel(i.user, t):
+                await i.response.send_message("❌ Ese team ya no existe o ya no lo gestionas.", ephemeral=True)
+                return False
+            return True
+
+        async def refrescar(self, i: discord.Interaction, aviso: str = ""):
+            self.stop()
+            t = self.team()
+            try:
+                if t:
+                    await i.edit_original_response(content=aviso or None, embed=embed_panel(t),
+                                                   view=PanelTeam(i.user, self.tid, i))
+                else:
+                    await i.edit_original_response(content="Este team ya no existe.", embed=None, view=None)
+            except discord.HTTPException:
+                pass
+
+        @discord.ui.button(label="Nombre", emoji="✏️", style=discord.ButtonStyle.primary, row=0)
+        async def nombre_color(self, i: discord.Interaction, _):
+            await i.response.send_modal(ModalNombreColor(self, self.team()))
+
+        @discord.ui.button(label="Color", emoji="🎨", style=discord.ButtonStyle.primary, row=0)
+        async def color(self, i: discord.Interaction, _):
+            t = self.team()
+            e, archivo = vista_previa(t.color, t)
+            e.title, e.description = f"🎨 Color actual: {t.color}", "Elige uno de la lista o escribe tu #hex."
+            await i.response.send_message(embed=e, file=archivo, view=SelectorColor(self, i.user.id), ephemeral=True)
+
+        @discord.ui.button(label="Etiqueta y emoji", emoji="🏷️", style=discord.ButtonStyle.primary, row=0)
+        async def etiqueta(self, i: discord.Interaction, _):
+            await i.response.send_modal(ModalEtiqueta(self, self.team()))
+
+        @discord.ui.button(label="Fuego amigo", emoji="⚔️", row=0)
+        async def fuego(self, i: discord.Interaction, _):
+            t = self.team()
+            await i.response.defer()
+            t.fuego_amigo = not t.fuego_amigo
+            async with bot.registro.lock:
+                bot.registro.guardar_extras(t)
+            await bot.sincronizar_teams()
+            await registrar_cambio(f"puso el fuego amigo del team **{esc(t.titulo)}** en "
+                                   f"**{'sí' if t.fuego_amigo else 'no'}** desde el panel", i.user)
+            await self.refrescar(i, "✅ Guardado.")
+
+        @discord.ui.button(label="Disolver", emoji="🗑️", style=discord.ButtonStyle.danger, row=0)
+        async def disolver(self, i: discord.Interaction, _):
+            t = self.team()
+            await i.response.send_message(f"⚠️ ¿Seguro que quieres **disolver {esc(t.titulo)}**? Todos sus miembros se "
+                                          "quedan sin team y se borra su rol de Discord.",
+                                          view=ConfirmarDisolver(self), ephemeral=True)
+
+    # ---- crear, invitar y salir desde Discord (se hace en el juego; si no estás conectado, al entrar)
+    async def ac_color(inter: discord.Interaction, actual: str):
+        a = actual.lower()
+        return [app_commands.Choice(name=f"{EMOJI_COLOR.get(n, '')} {n} ({h})".strip(), value=h)
+                for n, h in COLORES_TEAM.items() if a in n][:25]
+
+    @grupo.command(name="crear", description="Crea un team (en FTB Teams). Si no estás conectado, se crea al entrar")
+    @app_commands.describe(nombre="Nombre del team", color="Color: elige uno o escribe #RRGGBB")
+    @app_commands.autocomplete(color=ac_color)
+    async def team_crear(inter: discord.Interaction, nombre: app_commands.Range[str, 1, 32], color: str | None = None):
+        jugador = bot.registro.jugador_de(inter.user.id)
+        if not jugador:
+            await inter.response.send_message("Primero vincula tu cuenta de Minecraft con `/team vincular`.",
+                                              ephemeral=True)
+            return
+        nombre = nombre_team_valido(nombre)
+        hex_ = color_de(color) if color else None
+        if not nombre or (color and not hex_):
+            await inter.response.send_message("❌ " + ("Nombre no válido." if not nombre else
+                                              "Color no válido: elígelo de la lista o usa #RRGGBB."), ephemeral=True)
+            return
+        await inter.response.defer(ephemeral=True, thinking=True)
+        # ¿Ya está en un team? Se mira en el juego en directo (si está conectado) y en lo que sabe el bot
+        party = await bot.party_de(jugador)
+        actual = bot.team_de_discord(inter.user.id)
+        if party or (party is False and actual):
+            await inter.followup.send(f"❌ Ya estás en el team **{esc(party or actual.titulo)}**: solo se puede estar "
+                                      "en uno. Sal antes con `/team salir`.", ephemeral=True)
+            return
+        if any(t.nombre.lower() == nombre.lower() for t in bot.teams.values()):
+            await inter.followup.send(f"❌ Ya existe un team llamado **{esc(nombre)}**.", ephemeral=True)
+            return
+        antes = bot.registro.pendiente_de(jugador)
+        estado, error = await bot.pedir_en_juego({"accion": "crear", "discord": str(inter.user.id), "jugador": jugador,
+                                                 "nombre": nombre, "color": hex_})
+        if error:
+            await inter.followup.send(f"⚠️ No he podido crear el team: {error}", ephemeral=True)
+            return
+        await registrar_cambio(f"pidió crear el team **{esc(nombre)}** desde Discord", inter.user)
+        reemplaza = (f"\n(Sustituye a lo que tenías pendiente: {bot.texto_accion(antes)}.)"
+                     if antes and antes.get("nombre") != nombre else "")
+        await inter.followup.send(
+            f"🎮 Te he mandado un mensaje al **chat del juego**: haz clic en **[Crear el team {esc(nombre)}]** y "
+            "listo. Después te pongo el color, el rol de Discord y la etiqueta." if estado == "clic" else
+            f"✅ Team **{esc(nombre)}** listo." if estado == "hecho" else
+            f"⏳ No estás conectado: cuando entres al servidor te saldrá en el chat un botón para crear "
+            f"**{esc(nombre)}**.", ephemeral=True)
+        if reemplaza:
+            await inter.followup.send(reemplaza.strip(), ephemeral=True)
+
+    @grupo.command(name="invitar", description="Invita a alguien de Discord a tu team (dueño y oficiales)")
+    @app_commands.describe(usuario="A quién invitas")
+    async def team_invitar(inter: discord.Interaction, usuario: discord.Member):
+        t = bot.team_de_discord(inter.user.id)
+        if not t or not puede_panel(inter.user, t):
+            await inter.response.send_message("Solo el dueño y los oficiales de un team pueden invitar. (Admins: "
+                                              "desde `/team panel team:…`.)", ephemeral=True)
+            return
+        await inter.response.defer(ephemeral=True)
+        await inter.followup.send(await invitar_a(inter, t, usuario), ephemeral=True)
+
+    @grupo.command(name="invitaciones", description="Tus invitaciones a teams (aceptar o rechazar) y lo pendiente")
+    async def team_invitaciones(inter: discord.Interaction):
+        invs = [x for x in bot.registro.invitaciones_para(inter.user.id) if x["team"] in bot.teams]
+        jugador = bot.registro.jugador_de(inter.user.id)
+        pend = bot.registro.pendiente_de(jugador) if jugador else None
+        if not invs and not pend:
+            await inter.response.send_message("No tienes invitaciones ni nada pendiente.", ephemeral=True)
+            return
+        e = discord.Embed(title="📨 Tus invitaciones", color=COLOR)
+        v = discord.ui.View(timeout=None)
+        for x in invs[:4]:
+            t = bot.teams[x["team"]]
+            e.add_field(name=t.titulo, value=f"Te invita <@{x['de']}>", inline=False)
+            v.add_item(BotonInvitacion(True, t.id, str(inter.user.id), f"Aceptar {t.nombre}"[:80]))
+            v.add_item(BotonInvitacion(False, t.id, str(inter.user.id), "Rechazar"))
+        if pend:
+            e.description = f"⏳ Pendiente para cuando entres al servidor: {bot.texto_accion(pend)}."
+        await inter.response.send_message(embed=e, view=v if invs else discord.utils.MISSING, ephemeral=True)
+
+    class ConfirmarSalir(discord.ui.View):
+        def __init__(self, autor_id: int):
+            super().__init__(timeout=60)
+            self.autor_id = autor_id
+
+        @discord.ui.button(label="Sí, salir del team", style=discord.ButtonStyle.danger)
+        async def si(self, i: discord.Interaction, _):
+            jugador = bot.registro.jugador_de(i.user.id)
+            t = bot.team_de_discord(i.user.id)
+            if i.user.id != self.autor_id or not jugador or not t:
+                await i.response.edit_message(content="No hay nada que hacer.", view=None)
+                return
+            await i.response.edit_message(content="⏳ Saliendo…", view=None)
+            hecho, error = await pedir({"accion": "salir", "discord": str(i.user.id), "jugador": jugador,
+                                                     "team": t.id})
+            if not error:
+                await registrar_cambio(f"salió del team **{esc(t.titulo)}** desde Discord", i.user)
+            await i.edit_original_response(content=f"⚠️ No he podido sacarte: {error}" if error else
+                                           f"✅ Ya no estás en **{esc(t.titulo)}**." if hecho else
+                                           f"⏳ No estás conectado: saldrás de **{esc(t.titulo)}** al entrar al servidor.")
+
+        @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
+        async def no(self, i: discord.Interaction, _):
+            await i.response.edit_message(content="Sigues en tu team.", view=None)
+
+    @grupo.command(name="salir", description="Sal de tu team (si no estás conectado, al entrar al servidor)")
+    async def team_salir(inter: discord.Interaction):
+        t = bot.team_de_discord(inter.user.id)
+        if not t:
+            await inter.response.send_message("No estás en ningún team (o no tienes el Discord vinculado).",
+                                              ephemeral=True)
+            return
+        if uuid_de_usuario(inter.user.id) == t.lider and len(t.miembros) > 1:
+            await inter.response.send_message(
+                "Eres el dueño y el team tiene más miembros: pasa el liderazgo en el juego (FTB Teams) o disuélvelo "
+                "con `/team panel`.", ephemeral=True)
+            return
+        aviso = " Eres el único miembro: el team **se disolverá**." if len(t.miembros) <= 1 else ""
+        await inter.response.send_message(f"¿Salir de **{esc(t.titulo)}**?{aviso}", view=ConfirmarSalir(inter.user.id),
+                                          ephemeral=True)
+
+    @grupo.command(name="panel", description="Cambia tu team desde Discord (dueño y oficiales de FTB; admins: cualquiera)")
+    @app_commands.describe(team="Solo admins: el team que quieres gestionar")
+    @app_commands.autocomplete(team=ac_team)
+    async def team_panel(inter: discord.Interaction, team: str | None = None):
+        if team:
             t = await team_o_error(inter, team)
             if not t:
                 return
-            nuevo = t.id
-        await inter.response.defer(ephemeral=bot.privado)
-        problemas = await bot.cambiar_team(usuario, nuevo)
-        jugador = bot.registro.jugador_de(usuario.id)
-        if not jugador:
-            problemas.append("No tiene la cuenta de Minecraft vinculada: en el juego se aplicará cuando la vincule "
-                             "(`/team vincular`, o `/admin vincular`).")
-        que = f"{usuario.mention} → **{bot.teams[nuevo].titulo}**" if nuevo else f"{usuario.mention} → sin team"
-        await inter.followup.send(f"✅ {que}" + "".join(f"\n⚠️ {p}" for p in problemas), ephemeral=bot.privado)
-        await bot.enviar(bot.canal_registro, embed=discord.Embed(
-            description=f"🛡️ **{inter.user}**: {que}", color=0x555555, timestamp=datetime.now(timezone.utc)))
+        else:
+            t = bot.team_de_discord(inter.user.id)
+            if not t:
+                msg = ("No estás en ningún team (o no tienes el Discord vinculado: `/team vincular`). "
+                       "Los teams se crean dentro del juego con FTB Teams.")
+                if bot.es_admin(inter.user):
+                    msg += "\nComo admin, puedes abrir el de cualquiera con `/team panel team:…`."
+                await inter.response.send_message(msg, ephemeral=True)
+                return
+        if not puede_panel(inter.user, t):
+            await inter.response.send_message(
+                f"Solo el dueño y los oficiales de **{esc(t.titulo)}** pueden usar su panel. El dueño puede hacerte "
+                "oficial en el juego (pantalla de FTB Teams → tu nombre → Oficial).", ephemeral=True)
+            return
+        await inter.response.send_message(embed=embed_panel(t), view=PanelTeam(inter.user, t.id, inter), ephemeral=True)
 
+    tree.add_command(grupo)
+
+    # ---- para admins (dentro de /admin): lo que no se cambia desde FTB
     def registrar_cambio(texto: str, quien):
         return bot.enviar(bot.canal_registro, embed=discord.Embed(
             description=f"🛡️ **{quien}** {texto}", color=0x555555, timestamp=datetime.now(timezone.utc)))
 
-    async def aplicar_en_mc(t: Team) -> str:
-        try:
-            for c in comandos_crear(t):
-                await bot.rcon.comando(c)
-            return ""
-        except RconError:
-            return "\n⚠️ El servidor de Minecraft no responde: el team se creará en el juego cuando vuelva."
-
-    @admin.command(name="team-crear", description="Crea un team (en Minecraft y con su rol de Discord) con el nombre que quieras")
-    @app_commands.describe(nombre="Nombre del team (el que quieras)", color="Color de la [etiqueta] y del rol",
-                           etiqueta="Lo que sale entre [] delante del jugador en el chat (por defecto el nombre)",
-                           rol="Rol de Discord del team (si no eliges ninguno, el bot crea uno con el nombre del team)",
-                           emoji="Emoji para Discord (opcional)",
-                           fuego_amigo="¿Los del mismo team se pueden hacer daño? (por defecto no)")
-    @app_commands.choices(color=opciones_color)
-    async def adm_team_crear(inter: discord.Interaction, nombre: app_commands.Range[str, 1, 32],
-                             color: app_commands.Choice[str] | None = None,
-                             etiqueta: app_commands.Range[str, 1, 24] | None = None,
-                             rol: discord.Role | None = None, emoji: app_commands.Range[str, 1, 8] | None = None,
-                             fuego_amigo: bool = False):
-        if not bot.es_admin(inter.user) or not inter.guild:
-            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
-            return
-        nombre = " ".join(nombre.split())
-        if any(t.nombre.lower() == nombre.lower() for t in bot.teams.values()):
-            await inter.response.send_message(f"Ya hay un team llamado **{esc(nombre)}**.", ephemeral=True)
-            return
-        if rol and (rol.is_default() or rol.managed):
-            await inter.response.send_message("Ese rol no vale para un team (elige uno normal o deja que lo cree yo).",
-                                              ephemeral=True)
-            return
-        if rol and any(bot.roles_teams(inter.guild).get(tid) == rol for tid in bot.teams):
-            await inter.response.send_message(f"El rol {rol.mention} ya es de otro team.", ephemeral=True)
-            return
-        await inter.response.defer(ephemeral=bot.privado)
-        c = color.value if color else "white"
-        creado = False
-        if not rol:
-            if not inter.guild.me.guild_permissions.manage_roles:
-                await inter.followup.send("❌ Para crear el rol del team me falta el permiso **Gestionar roles** "
-                                          "(o elige un rol que ya exista en la opción `rol`).", ephemeral=bot.privado)
-                return
-            try:
-                rol = await inter.guild.create_role(name=nombre, colour=discord.Colour(HEX_COLORES.get(c, 0)),
-                                                    mentionable=True, reason=f"CobbleBOT: team creado por {inter.user}")
-                creado = True
-            except discord.HTTPException as e:
-                await inter.followup.send(f"❌ Discord no me dejó crear el rol ({e.text or e.status}).", ephemeral=bot.privado)
-                return
-        t = Team(id_para(nombre, bot.teams), nombre, str(rol.id), c, etiqueta_de(etiqueta or "") or nombre,
-                 fuego_amigo, emoji or "", rol_creado=creado)
-        async with bot.registro.lock:
-            bot.registro.guardar_team(t)
-        aviso = await aplicar_en_mc(t)
-        falta = bot.puede_gestionar_roles(inter.guild, {t.id: rol})
-        if falta:
-            aviso += f"\n⚠️ Para poner y quitar el rol a los jugadores, {falta}."
-        await inter.followup.send(
-            f"✅ Team **{esc(t.titulo)}** creado · rol {rol.mention}{' (nuevo)' if creado else ''} · "
-            f"color {COLORES.get(c, c)} · en el chat sale `[{t.etiqueta}] Jugador` · "
-            f"fuego amigo {'sí' if fuego_amigo else 'no'}.\n"
-            f"Los jugadores ya pueden entrar con `/team unirse` (o mételos tú con `/admin team`).{aviso}",
-            ephemeral=bot.privado)
-        await registrar_cambio(f"creó el team **{esc(t.titulo)}** (`{t.id}`)", inter.user)
-
-    @admin.command(name="team-editar", description="Cambia el nombre, color, etiqueta [ ], rol, emoji o fuego amigo de un team")
-    @app_commands.describe(team="Team (de los creados desde Discord)", nombre="Nombre nuevo", color="Color nuevo",
-                           etiqueta="Texto nuevo entre [] delante del jugador", rol="Otro rol de Discord para el team",
-                           emoji="Emoji nuevo ('-' para quitarlo)", fuego_amigo="Fuego amigo")
-    @app_commands.autocomplete(team=ac_team_discord)
-    @app_commands.choices(color=opciones_color)
+    @admin.command(name="team-editar", description="Etiqueta [ ], emoji, fuego amigo o rol de Discord de un team (nombre y color: en el juego)")
+    @app_commands.describe(team="Team", etiqueta="Texto entre [] delante del jugador ('-' = el nombre del team)",
+                           emoji="Emoji para Discord ('-' para quitarlo)", fuego_amigo="¿Se pueden hacer daño entre ellos?",
+                           rol="Usar este rol de Discord en vez del que creó el bot")
+    @app_commands.autocomplete(team=ac_team)
     async def adm_team_editar(inter: discord.Interaction, team: str,
-                              nombre: app_commands.Range[str, 1, 32] | None = None,
-                              color: app_commands.Choice[str] | None = None,
                               etiqueta: app_commands.Range[str, 1, 24] | None = None,
-                              rol: discord.Role | None = None, emoji: app_commands.Range[str, 1, 8] | None = None,
-                              fuego_amigo: bool | None = None):
+                              emoji: app_commands.Range[str, 1, 8] | None = None,
+                              fuego_amigo: bool | None = None, rol: discord.Role | None = None):
         if not bot.es_admin(inter.user) or not inter.guild:
             await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
             return
         t = await team_o_error(inter, team)
         if not t:
             return
-        if not t.desde_discord:
-            await inter.response.send_message("Ese team está definido en `config.toml`: cámbialo ahí.", ephemeral=True)
-            return
-        if all(v is None for v in (nombre, color, etiqueta, rol, emoji, fuego_amigo)):
-            await inter.response.send_message("No has cambiado nada.", ephemeral=True)
-            return
-        if nombre and any(o.id != t.id and o.nombre.lower() == " ".join(nombre.split()).lower()
-                          for o in bot.teams.values()):
-            await inter.response.send_message(f"Ya hay otro team llamado **{esc(nombre)}**.", ephemeral=True)
+        if all(v is None for v in (etiqueta, emoji, fuego_amigo, rol)):
+            await inter.response.send_message("No has cambiado nada. (El nombre y el color se cambian en el juego, "
+                                              "en los ajustes del team de FTB.)", ephemeral=True)
             return
         if rol and (rol.is_default() or rol.managed or any(
-                tid != t.id and r == rol for tid, r in bot.roles_teams(inter.guild).items())):
+                o.id != t.id and bot.rol_de(inter.guild, o) == rol for o in bot.teams.values())):
             await inter.response.send_message("Ese rol no vale (es de otro team o no se puede asignar).", ephemeral=True)
             return
         await inter.response.defer(ephemeral=bot.privado)
-        rol_antes = bot.roles_teams(inter.guild).get(t.id)
-        if nombre:
-            t.nombre = " ".join(nombre.split())
-        if color:
-            t.color = color.value
+        avisos = ""
         if etiqueta:
-            t.etiqueta = etiqueta_de(etiqueta) or t.nombre
+            t.etiqueta = "" if etiqueta.strip() == "-" else etiqueta_de(etiqueta)
         if emoji:
             t.emoji = "" if emoji.strip() == "-" else emoji.strip()
         if fuego_amigo is not None:
             t.fuego_amigo = fuego_amigo
-        avisos = ""
-        if rol and rol != rol_antes:
-            # Los miembros pasan al rol nuevo
-            t.rol, t.rol_creado = str(rol.id), False
-            for did, tid in list(bot.registro.equipos.items()):
-                if tid == t.id:
-                    m = await bot.miembro_fresco(inter.guild, did)
-                    if m and rol_antes and rol_antes in m.roles:
-                        try:
-                            await m.remove_roles(rol_antes, reason="CobbleBOT: el team cambió de rol")
-                        except discord.HTTPException:
-                            pass
-                    bot.registro.marcar_pendiente(int(did), True)
-        elif t.rol_creado and rol_antes and (nombre or color):
-            # El rol lo creó el bot: se le pone también el nombre y el color nuevos
-            try:
-                await rol_antes.edit(name=t.nombre, colour=discord.Colour(HEX_COLORES.get(t.color, 0)),
-                                     reason=f"CobbleBOT: team editado por {inter.user}")
-            except discord.HTTPException:
-                avisos += "\n⚠️ No he podido cambiar el nombre o el color del rol de Discord."
-        async with bot.registro.lock:
-            bot.registro.guardar_team(t)
-        avisos += await aplicar_en_mc(t)
-        if rol and rol != rol_antes:
-            await bot.sincronizar_teams()
-        r = bot.roles_teams(inter.guild).get(t.id)
-        await inter.followup.send(
-            f"✅ Team **{esc(t.titulo)}** actualizado · rol {r.mention if r else '—'} · "
-            f"color {COLORES.get(t.color, t.color)} · en el chat sale `[{t.etiqueta}] Jugador` · "
-            f"fuego amigo {'sí' if t.fuego_amigo else 'no'}.{avisos}", ephemeral=bot.privado)
-        await registrar_cambio(f"editó el team **{esc(t.titulo)}** (`{t.id}`)", inter.user)
-
-    class ConfirmarBorrado(discord.ui.View):
-        def __init__(self, autor_id: int, t: Team):
-            super().__init__(timeout=30)
-            self.autor_id, self.t = autor_id, t
-
-        async def interaction_check(self, i: discord.Interaction) -> bool:
-            return i.user.id == self.autor_id
-
-        @discord.ui.button(label="Sí, borrar", style=discord.ButtonStyle.danger)
-        async def si(self, i: discord.Interaction, _):
-            self.stop()
-            await i.response.edit_message(content=f"⏳ Borrando **{esc(self.t.titulo)}**…", view=None)
-            t, avisos = self.t, ""
-            rol = bot.roles_teams(i.guild).get(t.id) if i.guild else None
-            # Fuera de Minecraft (sus miembros se quedan sin team en el juego)
-            try:
-                await bot.rcon.comando(f"team remove {t.id}")
-            except RconError:
-                avisos += "\n⚠️ El servidor de Minecraft no responde: borra el team del juego cuando vuelva."
-            # Fuera del rol de Discord: si lo creó el bot se borra; si no, solo se les quita a los miembros
-            async with bot.registro.lock:
-                estaban = bot.registro.borrar_team(t.id)
-            if rol:
+        if rol:
+            antes = bot.rol_de(inter.guild, t)
+            if antes and antes != rol and t.rol_creado:
                 try:
-                    if t.rol_creado:
-                        await rol.delete(reason=f"CobbleBOT: team borrado por {i.user}")
-                    else:
-                        for did in estaban:
-                            m = await bot.miembro_fresco(i.guild, did)
-                            if m and rol in m.roles:
-                                await m.remove_roles(rol, reason=f"CobbleBOT: team borrado por {i.user}")
+                    await antes.delete(reason=f"CobbleBOT: el team pasa a usar otro rol ({inter.user})")
                 except discord.HTTPException:
-                    avisos += "\n⚠️ No he podido quitar el rol de Discord (revisa mis permisos)."
-            await i.edit_original_response(
-                content=f"🗑️ Team **{esc(t.titulo)}** borrado"
-                        + (" (y su rol de Discord)." if rol and t.rol_creado else ".") + avisos)
-            await registrar_cambio(f"borró el team **{esc(t.titulo)}** (`{t.id}`)", i.user)
-
-        @discord.ui.button(label="Cancelar", style=discord.ButtonStyle.secondary)
-        async def no(self, i: discord.Interaction, _):
-            self.stop()
-            await i.response.edit_message(content="No se ha borrado nada.", view=None)
-
-    @admin.command(name="team-borrar", description="Borra un team (sus miembros se quedan sin team)")
-    @app_commands.describe(team="Team a borrar (de los creados desde Discord)")
-    @app_commands.autocomplete(team=ac_team_discord)
-    async def adm_team_borrar(inter: discord.Interaction, team: str):
-        if not bot.es_admin(inter.user):
-            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
-            return
-        t = await team_o_error(inter, team)
-        if not t:
-            return
-        if not t.desde_discord:
-            await inter.response.send_message("Ese team está definido en `config.toml`: quítalo de ahí.",
-                                              ephemeral=True)
-            return
-        await inter.response.send_message(
-            f"⚠️ ¿Borrar el team **{esc(t.titulo)}**? Sus miembros se quedarán sin team"
-            + (" y se borrará su rol de Discord (lo creé yo)." if t.rol_creado else
-               "; el rol de Discord no se borra, solo se les quita."),
-            view=ConfirmarBorrado(inter.user.id, t), ephemeral=bot.privado)
+                    avisos += "\n⚠️ No he podido borrar el rol anterior."
+            t.rol, t.rol_creado = str(rol.id), False
+        async with bot.registro.lock:
+            bot.registro.guardar_extras(t)
+        await bot.sincronizar_teams()
+        r = bot.rol_de(inter.guild, t)
+        await inter.followup.send(
+            f"✅ Team **{esc(t.titulo)}** · rol {r.mention if r else '—'} · en el chat sale "
+            f"`[{t.etiqueta or t.nombre}] Jugador` · fuego amigo {'sí' if t.fuego_amigo else 'no'}.{avisos}",
+            ephemeral=bot.privado)
+        await registrar_cambio(f"editó el team **{esc(t.titulo)}**", inter.user)
 
     @admin.command(name="vincular", description="Vincula a mano un usuario de Discord con un jugador de Minecraft")
     @app_commands.describe(usuario="Usuario de Discord", jugador="Jugador de Minecraft")
@@ -2151,15 +2830,21 @@ def registrar_teams(bot: CobbleBot, tree: app_commands.CommandTree, admin: app_c
         aviso = "" if c else "\n⚠️ Ese jugador no ha entrado nunca al servidor (revisa que esté bien escrito)."
         await inter.followup.send(f"✅ {usuario.mention} vinculado con **{esc(nombre)}**.{aviso}", ephemeral=bot.privado)
 
-    @admin.command(name="desvincular", description="Quita el vínculo Discord ↔ Minecraft de un usuario (y su team)")
+    @admin.command(name="desvincular", description="Quita el vínculo Discord ↔ Minecraft de un usuario (y el rol de su team)")
     @app_commands.describe(usuario="Usuario de Discord")
     async def adm_desvincular(inter: discord.Interaction, usuario: discord.Member):
         if not bot.es_admin(inter.user):
             await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
             return
         await inter.response.defer(ephemeral=bot.privado)
-        problemas = await bot.cambiar_team(usuario, None) if bot.registro.team_de(usuario.id) else []
         async with bot.registro.lock:
             nombre = bot.registro.desvincular(usuario.id)
+        aviso = ""
+        quitar = [r for r in (bot.rol_de(usuario.guild, t) for t in bot.teams.values()) if r and r in usuario.roles]
+        if quitar:
+            try:
+                await usuario.remove_roles(*quitar, reason="CobbleBOT: desvinculado")
+            except discord.HTTPException:
+                aviso = "\n⚠️ No he podido quitarle el rol del team (revisa mis permisos)."
         msg = f"✅ {usuario.mention} ya no está vinculado" + (f" (era **{esc(nombre)}**)." if nombre else ".")
-        await inter.followup.send(msg + "".join(f"\n⚠️ {p}" for p in problemas), ephemeral=bot.privado)
+        await inter.followup.send(msg + aviso, ephemeral=bot.privado)
