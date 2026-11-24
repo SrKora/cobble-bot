@@ -22,6 +22,7 @@ from .archivos import crear_fuente
 from .cobblemon_datos import (NATURALEZAS, RE_EXTRA, RE_ID, RE_JAR_COBBLEMON, RE_MOTE, TIPOS_TERA,
                               DatosCobblemon, parsear_stats, resumen_stats)
 from .entorno import aplicar_entorno, cargar_dotenv
+from .estado_fijo import EstadoFijo, embed_estado
 from .ligas import EstadoLigas
 from .objetos_datos import Mod, buscar, catalogo_de_jars
 from .texto_mc import COLORES, a_json, componentes, texto_plano
@@ -160,6 +161,10 @@ class CobbleBot(discord.Client):
         self.registro = Registro(os.environ.get("BOT_DATOS", "datos"))
         # Ligas completadas: anuncio en un canal y rol de Discord por región (también en la carpeta del bot)
         self.ligas = EstadoLigas(os.environ.get("BOT_DATOS", "datos"))
+        # Mensaje fijo con el estado del servidor (/admin estado-fijo)
+        self.estado_fijo = EstadoFijo(os.environ.get("BOT_DATOS", "datos"))
+        self.direccion_servidor = str(cfg.get("monitor", {}).get("direccion", "")).strip()[:100]
+        self._maximo = 0
         self._reinicio_por: str | None = None     # quién pidió el reinicio con /admin reiniciar
         self._visto_caido = False                 # tras pedir un reinicio, hay que verlo caer antes de darlo por levantado
         self.intervalo_monitor = int(cfg.get("monitor", {}).get("intervalo_segundos", 30))
@@ -747,12 +752,16 @@ class CobbleBot(discord.Client):
                 self._online_previo = None
                 self._caido_desde = time.time() - 2 * self.intervalo_monitor
                 self._modo_caido()
-                await self.enviar(self.canal_estado, embed=discord.Embed(
-                    title="🔴 El servidor no responde",
-                    description="Puede estar apagado o reiniciándose. Avisaré aquí en cuanto se pueda entrar.",
-                    color=0x8B0000, timestamp=datetime.now(timezone.utc)))
+                if not self.estado_fijo.canal:      # con mensaje fijo, el aviso es ese mismo mensaje (no uno nuevo)
+                    await self.enviar(self.canal_estado, embed=discord.Embed(
+                        title="🔴 El servidor no responde",
+                        description="Puede estar apagado o reiniciándose. Avisaré aquí en cuanto se pueda entrar.",
+                        color=0x8B0000, timestamp=datetime.now(timezone.utc)))
+            if self._servidor_activo is False:
+                await self.actualizar_estado_fijo(False, self._maximo, [])
             return
 
+        self._maximo = maximo
         if self._servidor_activo is False:
             if not self._visto_caido:
                 return      # se ha pedido el reinicio pero todavía no se ha parado: aún no cuenta como "de vuelta"
@@ -766,7 +775,8 @@ class CobbleBot(discord.Client):
             e.add_field(name="👥 Jugadores", value=f"{online}/{maximo}")
             if self._reinicio_por:
                 e.set_footer(text=f"Reinicio pedido por {self._reinicio_por}")
-            await self.enviar(self.canal_estado, embed=e)
+            if not self.estado_fijo.canal:
+                await self.enviar(self.canal_estado, embed=e)
             self.monitor.change_interval(seconds=self.intervalo_monitor)
             log.info("Servidor de vuelta: avisado en Discord")
             asyncio.create_task(self._teams_tras_reinicio())
@@ -784,6 +794,39 @@ class CobbleBot(discord.Client):
             for n in sorted(self._online_previo - actuales):
                 await self.enviar(self.canal_avisos, content=f"⬅️ **{esc(n)}** ha salido del servidor")
         self._online_previo = actuales
+        await self.actualizar_estado_fijo(True, maximo, nombres)
+
+    async def actualizar_estado_fijo(self, online: bool, maximo: int, nombres: list[str]):
+        """Edita el mensaje fijo de estado (solo si ha cambiado algo o hace rato que no se toca)."""
+        ef = self.estado_fijo
+        if not ef.canal:
+            return
+        ef.marcar(online)
+        conectados = []
+        for n in nombres:
+            t = self.jugador_en_team(n)
+            conectados.append((n, (t.etiqueta or t.nombre) if t else ""))
+        if not ef.toca((online, tuple(conectados), maximo, self._reinicio_por)):
+            return
+        e = embed_estado(online, conectados, maximo, ef.online_desde if online else ef.caido_desde,
+                         self._reinicio_por, self.direccion_servidor)
+        try:
+            canal = self.get_channel(ef.canal) or await self.fetch_channel(ef.canal)
+            if ef.mensaje:
+                try:
+                    await canal.get_partial_message(ef.mensaje).edit(embed=e)
+                    return
+                except discord.NotFound:
+                    pass        # lo han borrado: se publica otro
+            m = await canal.send(embed=e)
+            ef.poner(ef.canal, m.id)
+            try:
+                await m.pin(reason="CobbleBOT: estado del servidor")
+            except discord.HTTPException:
+                pass
+        except discord.HTTPException as err:
+            ef._firma = None        # se reintenta en la siguiente vuelta del monitor (30 s), no a los 5 minutos
+            log.warning("No he podido actualizar el mensaje de estado: %s", err)
 
     @monitor.before_loop
     async def _antes_monitor(self):
@@ -1035,6 +1078,8 @@ def paginas_ayuda(bot: CobbleBot, admin: bool, regalar: bool = False) -> dict[st
             _cmd("/admin whitelist · op⚠️ · operadores", "Acceso y permisos"),
             _cmd("/admin modo · teletransportar · curar · experiencia", "Jugadores"),
             _cmd("/admin hora · clima · dificultad · guardar · reiniciar⚠️", "Mundo y servidor"),
+            _cmd("/admin estado-fijo [canal]", "Mensaje fijo con el estado del servidor, que se actualiza solo "
+                                               "(sin canal: quitarlo)"),
             _cmd("/admin mensaje", "En el chat, como título o en la hotbar, con colores (`&6` dorado, `&c` rojo, "
                                    "`&a` verde, `&l` negrita…)"),
             _cmd("/comando texto", "Cualquier comando permitido, con sugerencias"),
@@ -1550,6 +1595,40 @@ def registrar_comandos(bot: CobbleBot):
     @admin.command(name="guardar", description="Guarda el mundo ahora")
     async def adm_guardar(inter: discord.Interaction):
         await ejecutar(inter, "save-all", "Mundo guardado")
+
+    @admin.command(name="estado-fijo", description="Mensaje fijo en un canal con el estado del servidor (se actualiza solo)")
+    @app_commands.describe(canal="Canal donde ponerlo (sin canal: quitarlo)")
+    async def adm_estado_fijo(inter: discord.Interaction, canal: discord.TextChannel | None = None):
+        if not bot.es_admin(inter.user):
+            await inter.response.send_message("No tienes permiso para usar esto.", ephemeral=True)
+            return
+        await inter.response.defer(ephemeral=True)
+        ef = bot.estado_fijo
+        if ef.canal and ef.mensaje:      # el anterior fuera (también si se cambia de canal)
+            try:
+                viejo = bot.get_channel(ef.canal) or await bot.fetch_channel(ef.canal)
+                await viejo.get_partial_message(ef.mensaje).delete()
+            except discord.HTTPException:
+                pass
+        if not canal:
+            ef.poner(None, None)
+            await inter.followup.send("✅ Mensaje de estado quitado.", ephemeral=True)
+            return
+        permisos = canal.permissions_for(canal.guild.me)
+        if not (permisos.send_messages and permisos.embed_links):
+            await inter.followup.send(f"❌ No puedo escribir mensajes con embeds en {canal.mention}.", ephemeral=True)
+            return
+        ef.poner(canal.id, None)
+        try:
+            online, maximo, nombres = parsear_list(await bot.rcon.comando(CMD_LIST))
+            await bot.actualizar_estado_fijo(True, maximo, nombres)
+        except RconError:
+            await bot.actualizar_estado_fijo(False, bot._maximo, [])
+        fijado = ""
+        if ef.mensaje and not permisos.manage_messages:
+            fijado = "\n(No he podido fijarlo arriba del canal: me falta el permiso **Gestionar mensajes**; fíjalo tú.)"
+        await inter.followup.send(f"✅ Mensaje de estado puesto en {canal.mention}. Se actualiza solo cuando alguien "
+                                  f"entra o sale, si se cae el servidor y cada 5 minutos.{fijado}", ephemeral=True)
 
     class ConfirmarReinicio(discord.ui.View):
         def __init__(self, autor_id: int, segundos: int):

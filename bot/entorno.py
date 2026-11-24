@@ -27,6 +27,7 @@ VARIABLES: dict[str, tuple[str, str, str]] = {
     "ACTUALIZAR_MINUTOS":     ("archivos", "actualizar_minutos", "float"),
     "MONITOR_SEGUNDOS":       ("monitor", "intervalo_segundos", "int"),
     "AVISAR_ENTRADAS":        ("monitor", "avisar_entradas", "bool"),
+    "MC_DIRECCION":           ("monitor", "direccion", "str"),
     "MENSAJES_NOMBRE":        ("mensajes", "nombre", "str"),
     "MENSAJES_COLOR":         ("mensajes", "color", "str"),
 }

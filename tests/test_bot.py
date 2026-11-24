@@ -276,6 +276,22 @@ async def main():
         otra = EstadoLigas(Path(tmp) / "datos")
         assert otra.canal == 123 and otra.roles == {"kanto": 456} and len(otra.vistas["u1"]) == 2
         print("Ligas OK")
+        # Mensaje fijo de estado: solo se edita si cambia algo (o cada 5 min) y recuerda desde cuándo está encendido
+        from bot.estado_fijo import EstadoFijo, embed_estado
+        ef = EstadoFijo(Path(tmp) / "ef")
+        ef.poner(10, 20); ef.marcar(True, 1000.0); ef.marcar(True, 2000.0)
+        assert ef.online_desde == 1000.0                                     # no se reinicia mientras sigue online
+        assert ef.toca(("a",), 0.0 + 1e6) and not ef.toca(("a",), 1e6 + 10) and ef.toca(("b",), 1e6 + 20)
+        assert ef.toca(("b",), 1e6 + 20 + 300)                                # refresco cada 5 min
+        otro = EstadoFijo(Path(tmp) / "ef")
+        assert (otro.canal, otro.mensaje, otro.online_desde) == (10, 20, 1000.0)
+        otro.marcar(False, 3000.0)
+        assert otro.online_desde is None and otro.caido_desde == 3000.0
+        e = embed_estado(True, [("Ana", "Rocket"), ("Luis_", "")], 10, 1000.0, None, "mc.ejemplo.com")
+        assert "online" in e.title and "`[Rocket]`" in e.fields[-1].value and "Luis\\_" in e.fields[-1].value
+        assert "offline" in embed_estado(False, [], 10, 3000.0).title
+        assert "Reiniciando" in embed_estado(False, [], 10, 3000.0, "Kora").title
+        print("Estado fijo OK")
         # Invitaciones y cosas pendientes desde Discord: se guardan y sobreviven a un reinicio
         reg = Registro(Path(tmp) / "inv")
         reg.invitar("t1", 1, 2); reg.invitar("t1", 1, 2); reg.invitar("t2", 3, 2)

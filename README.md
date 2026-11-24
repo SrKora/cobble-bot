@@ -308,6 +308,7 @@ Los marcados con ⚠️ **piden confirmar con un botón** antes de hacerse. Solo
 | `/admin curar` | Cura los Pokémon del equipo de un jugador |
 | `/admin experiencia` | Da (o quita, en negativo) niveles o puntos |
 | `/admin guardar` | Guarda el mundo |
+| `/admin estado-fijo [canal]` | Publica (y fija) en ese canal un mensaje con el estado del servidor: online/offline, jugadores conectados con su `[team]` y desde cuándo está encendido. Se edita solo cuando alguien entra o sale, si se cae o vuelve, y cada 5 minutos. Sin canal, lo quita. Opcional: `MC_DIRECCION` en `.env` para enseñar la dirección del servidor |
 | `/admin reiniciar [aviso]` ⚠️ | Avisa a los jugadores (chat y título en pantalla), espera y reinicia. Requiere que algo vuelva a arrancar el servidor al pararse (en Docker: `restart: unless-stopped`) |
 | `/admin mensaje` | Mensajes en el juego (ver abajo) |
 | `/admin team-editar team [etiqueta] [emoji] [fuego_amigo] [rol]` | Lo que FTB no tiene: el texto entre `[ ]` del chat (por defecto el nombre del team), el emoji de Discord, si se pueden hacer daño entre ellos y usar otro rol de Discord en vez del que crea el bot. El nombre y el color se cambian en el juego |
