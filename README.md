@@ -3,14 +3,14 @@
 Bot de Discord para servidores de Minecraft con **Cobblemon**, pensado para el modpack **COBBLEVERSE**.
 
 - 📊 **Para todos:** fichas de jugador, equipos Pokémon, medallas por región y rankings.
-- 🛡️ **Teams:** los de **FTB Teams** (se crean en el juego), copiados a roles de Discord y con `[etiqueta]` de color en el chat, y ranking entre teams.
+- 🛡️ **Teams:** los de **FTB Teams**, en los dos sentidos: lo que se hace en el juego pasa a Discord y desde Discord se crean teams, se invita, se echa y se cambia nombre y color (panel con botones). Cada team tiene su rol de Discord, su `[etiqueta]` de color en el chat y ranking entre teams.
 - 🏅 **Ligas:** cuando alguien vence al campeón de una región, el bot lo anuncia en un canal y le da un rol.
 - 🎁 **Para tu equipo:** regala Pokémon (con IVs, EVs, movimientos…), dinero y objetos desde Discord.
 - 🔧 **Para los admins:** gestiona el servidor (expulsar, banear, whitelist, operadores, clima, mensajes en pantalla, reinicios…) sin entrar al juego. Lo peligroso pide confirmación con un botón.
-- 🟢 **Avisos:** el bot avisa en un canal cuando el servidor se cae, se reinicia y **en cuanto se puede volver a entrar**.
+- 🟢 **Estado del servidor:** un **mensaje fijo** en un canal que se edita solo (online/offline, quién está conectado y desde cuándo) o, si no lo usas, avisos cuando el servidor se cae, se reinicia y **en cuanto se puede volver a entrar**.
 - 🔒 **Seguro:** lee los archivos del servidor en **solo lectura** y todo lo hace con comandos del propio servidor.
 
-> Esta es la rama **`teams-discord`**: los teams son los de **FTB Teams** (mod necesario en el servidor), copiados a roles de Discord; cada jugador vincula su cuenta.
+> La rama **`main`** (antes `teams-discord`) usa los teams de **FTB Teams** (mod necesario en el servidor), conectados con roles de Discord; cada jugador vincula su cuenta.
 > En la rama **`teams-minecraft`** los teams existen solo en el juego y los gestiona un admin.
 
 ---
@@ -34,7 +34,8 @@ Bot de Discord para servidores de Minecraft con **Cobblemon**, pensado para el m
 
 ## 1. Requisitos
 
-- Un **servidor de Minecraft con Cobblemon** (Fabric). Probado con **COBBLEVERSE 1.7.42** (Minecraft 1.21.1, Cobblemon 1.7). Con otros modpacks de Cobblemon funciona casi todo; las medallas y ligas hay que ajustarlas ([apartado 9](#9-adaptarlo-a-tu-mundo-o-modpack)).
+- Un **servidor de Minecraft con Cobblemon** (Fabric). En uso con **COBBLEVERSE 1.8.0** (Minecraft 1.21.1, Cobblemon 1.8); antes, con 1.7.42. Con otros modpacks de Cobblemon funciona casi todo; las medallas y ligas hay que ajustarlas ([apartado 9](#9-adaptarlo-a-tu-mundo-o-modpack)).
+- El mod **FTB Teams** en el servidor, para los teams (en la rama `teams-minecraft` no hace falta).
 - **RCON activado** en el servidor (el bot lo usa para mandar comandos y saber quién está conectado).
 - **El bot va en la misma máquina que el servidor**: lee los archivos del mundo (estadísticas, Pokémon, medallas) directamente del disco, en solo lectura.
 - **Docker** con Docker Compose (recomendado; en Windows, dentro de WSL) **o** Python 3.11+.
@@ -73,7 +74,9 @@ Abre esta dirección cambiando `TU_APPLICATION_ID`:
 https://discord.com/oauth2/authorize?client_id=TU_APPLICATION_ID&scope=bot+applications.commands&permissions=268487680
 ```
 
-Elige tu servidor y acepta. Permisos que pide: **Ver canales, Enviar mensajes, Insertar enlaces, Adjuntar archivos** (para el `.txt` de `/diagnostico`) y **Gestionar roles** (para los roles de teams y ligas).
+Elige tu servidor y acepta. Permisos que pide: **Ver canales, Enviar mensajes, Insertar enlaces, Adjuntar archivos** (para el `.txt` de `/diagnostico` y la vista previa del color en `/team panel`) y **Gestionar roles** (para los roles de teams y ligas).
+
+Opcional: para que `/admin estado-fijo` pueda **fijar** su mensaje en el canal, dale en ese canal el permiso **Fijar mensajes** (o *Gestionar mensajes*). Sin él, el mensaje funciona igual pero sin fijar (el bot avisa).
 
 Después, en **Ajustes del servidor → Roles**, **arrastra el rol del bot por encima** de los roles de teams y ligas: Discord solo deja a un bot poner roles que estén por debajo del suyo.
 
@@ -84,7 +87,7 @@ En Discord: **Ajustes de usuario → Avanzado → Modo desarrollador** (actíval
 | Qué | Dónde | Variable del `.env` |
 |---|---|---|
 | ID del **servidor** | Clic derecho en el icono del servidor | `DISCORD_GUILD_ID` (obligatorio: hace que los comandos aparezcan al instante) |
-| ID de un **canal de estado** | Clic derecho en el canal | `DISCORD_CANAL_ESTADO`: avisos de servidor caído / reiniciando / online |
+| ID de un **canal de estado** | Clic derecho en el canal | `DISCORD_CANAL_ESTADO`: avisos de servidor caído / reiniciando / online (si pones el mensaje fijo con `/admin estado-fijo`, los avisos sueltos dejan de mandarse: todo va en ese mensaje) |
 | ID de un **canal de registro** (privado) | Clic derecho en el canal | `DISCORD_CANAL_REGISTRO`: queda apuntado quién usa `/dar`, `/admin` y `/comando` |
 | ID de los **roles** de admin y de regalos | Ajustes del servidor → Roles → clic derecho | `DISCORD_ROLES_ADMIN`, `DISCORD_ROLES_REGALOS` |
 
@@ -137,9 +140,9 @@ Si tu servidor usa la imagen de Docker **`itzg/minecraft-server`**, en lugar de 
 ### 4.1 Descargar y configurar
 
 ```bash
-git clone https://github.com/<usuario>/cobble-bot.git     # si el repositorio es privado, pide acceso al dueño
+git clone https://github.com/SrKora/cobble-bot.git     # si el repositorio es privado, pide acceso al dueño
 cd cobble-bot
-git checkout teams-discord        # o teams-minecraft (ver arriba la diferencia)
+# (rama main: teams de FTB Teams. Para la otra versión: git checkout teams-minecraft)
 cp .env.ejemplo .env
 cp config.ejemplo.toml config.toml
 chmod 600 .env                    # que solo tu usuario pueda leer las claves
@@ -190,7 +193,7 @@ En el `.env`:
 BOT_SIN_RED_DOCKER=1             # el bot usa la red de la máquina
 RCON_HOST=127.0.0.1
 MC_DATOS=/ruta/a/la/carpeta/del/servidor
-UID_GID=1000:1000                # el usuario que ejecuta el servidor
+UID_GID=1000:1000                # el usuario que ejecuta el servidor (stat -c '%u:%g' /ruta/a/la/carpeta/del/servidor)
 ```
 
 ```bash
@@ -198,6 +201,8 @@ UID_GID=1000:1000                # el usuario que ejecuta el servidor
 ./bot.sh arrancar
 ./bot.sh logs
 ```
+
+Sin Docker, el servidor no vuelve a encenderse solo cuando se para: para que `/admin reiniciar` funcione, arráncalo como servicio de systemd con `Restart=always` (o con un script que lo relance en bucle).
 
 ### 4.4 Opción C: sin Docker (Python)
 
@@ -225,10 +230,11 @@ En **Windows** basta con doble clic en `iniciar.bat` (crea el entorno la primera
 1. Escribe `/help`: te enseña los comandos que **tú** puedes usar. Si no aparece ningún comando, pulsa **Ctrl+R** en Discord.
 2. `/estado`: debería decir que el servidor está online. Si dice que no responde, revisa RCON ([problemas frecuentes](#11-problemas-frecuentes)).
 3. Entra al servidor, juega un poco y usa `/actualizar` (guarda el mundo y recarga). Luego `/stats TuNombre`.
-4. **Teams:** se crean en el juego con FTB Teams. Cada jugador vincula su Discord con `/team vincular` → `/team confirmar` y recibe el rol de su team.
-5. **Ligas:** elige el canal de anuncios con `/admin ligas canal:#ligas` y un rol por región con `/admin ligas region:Kanto rol:@Campeón de Kanto`.
-6. `/diagnostico TuNombre` (admins): qué archivos encuentra el bot del jugador, con un `.txt` de los IDs de sus logros. Útil para ajustar medallas.
-7. **Quién ve qué:** los comandos `/admin`, `/dar`, `/comando`, `/actualizar` y `/diagnostico` solo los ve quien tiene *Gestionar servidor*. Para enseñárselos a otro rol sin darle ese permiso: **Ajustes del servidor → Integraciones → (tu bot) → elige el comando → añade el rol**. Ese rol, además, tiene que estar en `DISCORD_ROLES_ADMIN` o `DISCORD_ROLES_REGALOS` para que el bot le deje usarlos.
+4. **Teams:** cada jugador vincula su Discord con `/team vincular` → `/team confirmar` y recibe el rol de su team. Los teams se crean en el juego (FTB Teams) o con `/team crear`, y se gestionan con `/team panel`.
+5. **Estado del servidor** (opcional): `/admin estado-fijo canal:#estado-del-servidor` deja un mensaje que se actualiza solo.
+6. **Ligas:** elige el canal de anuncios con `/admin ligas canal:#ligas` y un rol por región con `/admin ligas region:Kanto rol:@Campeón de Kanto`.
+7. `/diagnostico TuNombre` (admins): qué archivos encuentra el bot del jugador, con un `.txt` de los IDs de sus logros. Útil para ajustar medallas.
+8. **Quién ve qué:** los comandos `/admin`, `/dar`, `/comando`, `/actualizar` y `/diagnostico` solo los ve quien tiene *Gestionar servidor*. Para enseñárselos a otro rol sin darle ese permiso: **Ajustes del servidor → Integraciones → (tu bot) → elige el comando → añade el rol**. Ese rol, además, tiene que estar en `DISCORD_ROLES_ADMIN` o `DISCORD_ROLES_REGALOS` para que el bot le deje usarlos.
 
 ---
 
@@ -252,7 +258,7 @@ En **Windows** basta con doble clic en `iniciar.bat` (crea el entorno la primera
 
 ### Teams (para todos)
 
-Los teams son los de **FTB Teams**: se crean, se invita a gente, se echa y se cambia el nombre o el color **dentro del juego** (botón de FTB Teams en el inventario). El bot solo los copia a Discord y al chat.
+Los teams son los de **FTB Teams** y funcionan **en los dos sentidos**: lo que se hace en el juego (botón de FTB Teams en el inventario) se copia a Discord y al chat, y lo que se hace desde Discord (crear, invitar, echar, salir, nombre y color) se aplica en FTB Teams. Si el jugador no está conectado, se hace en cuanto entra al servidor. Quien ya está en un team no puede crear otro.
 
 | Comando | Qué hace |
 |---|---|
@@ -260,8 +266,8 @@ Los teams son los de **FTB Teams**: se crean, se invita a gente, se echa y se ca
 | `/team confirmar codigo` | Termina la vinculación pegando ese código (caduca en 5 minutos y sirve una sola vez) |
 | `/team info [team]` | Miembros de cada team (con un team: líder, rol, color, etiqueta y fuego amigo) |
 | `/team actualizar` | Guarda el mundo y copia ya a Discord los cambios de teams hechos en el juego (una vez por minuto) |
-| `/team panel [team]` | Panel con botones para el dueño y los oficiales del team de FTB: nombre y color (se cambian también en FTB Teams), etiqueta `[ ]`, emoji, fuego amigo, invitar, cancelar invitaciones, echar miembros y disolver (solo el dueño). Los admins pueden abrir el de cualquier team con `team:`, echar a cualquiera menos al dueño y **meter a alguien sin invitación** (si no está conectado, entra al conectarse) |
-| `/team crear nombre [color]` | Crea un team de FTB Teams desde Discord. Si no estás conectado al servidor, se crea en cuanto entras |
+| `/team panel [team]` | Panel con botones para el dueño y los oficiales del team de FTB: nombre y color (se cambian también en FTB Teams; el color con 22 colores de muestra o un `#hex`, con vista previa), etiqueta `[ ]`, emoji, fuego amigo, invitar, cancelar invitaciones, echar miembros y disolver (solo el dueño). Los admins pueden abrir el de cualquier team con `team:`, echar a cualquiera menos al dueño y **meter a alguien sin invitación** (si no está conectado, entra al conectarse) |
+| `/team crear nombre [color]` | Crea un team de FTB Teams desde Discord: en el juego te sale un mensaje **"[Crear el team …]"** y al hacer clic se crea (FTB solo deja que lo cree el propio jugador). Si no estás conectado, el mensaje te llega al entrar |
 | `/team invitar usuario` | Dueño y oficiales: invita a alguien de Discord. Le llega por privado (o en el canal) con botones Aceptar/Rechazar; caduca en 7 días |
 | `/team invitaciones` | Tus invitaciones (aceptar o rechazar) y lo que tienes pendiente. Si aceptas sin estar conectado, entras al team al conectarte |
 | `/team salir` | Sal de tu team (si no estás conectado, al entrar al servidor) |
@@ -309,9 +315,9 @@ Los marcados con ⚠️ **piden confirmar con un botón** antes de hacerse. Solo
 | `/admin experiencia` | Da (o quita, en negativo) niveles o puntos |
 | `/admin guardar` | Guarda el mundo |
 | `/admin estado-fijo [canal]` | Publica (y fija) en ese canal un mensaje con el estado del servidor: online/offline, jugadores conectados con su `[team]` y desde cuándo está encendido. Se edita solo cuando alguien entra o sale, si se cae o vuelve, y cada 5 minutos. Sin canal, lo quita. Opcional: `MC_DIRECCION` en `.env` para enseñar la dirección del servidor |
-| `/admin reiniciar [aviso]` ⚠️ | Avisa a los jugadores (chat y título en pantalla), espera y reinicia. Requiere que algo vuelva a arrancar el servidor al pararse (en Docker: `restart: unless-stopped`) |
+| `/admin reiniciar [aviso]` ⚠️ | Avisa a los jugadores (chat y título en pantalla), espera y reinicia. Requiere que algo vuelva a arrancar el servidor al pararse (en Docker: `restart: unless-stopped`; sin Docker: servicio de systemd con `Restart=always`) |
 | `/admin mensaje` | Mensajes en el juego (ver abajo) |
-| `/admin team-editar team [etiqueta] [emoji] [fuego_amigo] [rol]` | Lo que FTB no tiene: el texto entre `[ ]` del chat (por defecto el nombre del team), el emoji de Discord, si se pueden hacer daño entre ellos y usar otro rol de Discord en vez del que crea el bot. El nombre y el color se cambian en el juego |
+| `/admin team-editar team [etiqueta] [emoji] [fuego_amigo] [rol]` | Lo que FTB no tiene: el texto entre `[ ]` del chat (por defecto el nombre del team), el emoji de Discord, si se pueden hacer daño entre ellos y usar otro rol de Discord en vez del que crea el bot. El nombre y el color se cambian en el juego o con `/team panel` |
 | `/admin vincular usuario jugador` · `/admin desvincular usuario` | Vincular a mano (sin código) o deshacer un vínculo |
 | `/admin ligas [canal] [region] [rol] [quitar_rol]` | Canal donde se anuncia cada liga completada y rol que recibe quien la completa (uno por región). Sin opciones, enseña cómo está |
 | `/comando texto` | Cualquier comando de la lista `permitidos` de `config.toml`, con sugerencias |
@@ -337,7 +343,9 @@ Si algún comando falla de forma inesperada, el bot responde con un **código de
 
 ### Teams
 
-- **Manda el juego (FTB Teams).** El bot lee los teams del mundo (`<mundo>/ftbteams/party/`) cada 5 minutos, o al momento con `/team actualizar`. FTB escribe esos archivos cuando el servidor guarda el mundo, así que un cambio puede tardar unos minutos en verse.
+- **Manda el juego (FTB Teams).** El bot lee los teams del mundo (`<mundo>/ftbteams/party/` y los disueltos en `ftbteams/deleted/`) **cada minuto**, o al momento con `/team actualizar`. FTB escribe esos archivos cuando el servidor guarda el mundo, así que un cambio hecho en el juego puede tardar un poco en verse.
+- **Desde Discord** el bot usa los comandos de FTB Teams por RCON: meter (`force-add`), echar (`force-remove`), disolver (`force-disband`) y cambiar nombre y color (`settings_for`). Crear un team es la excepción: FTB solo deja que lo cree el propio jugador, así que le llega un mensaje con un enlace para hacer clic. Si el jugador no está conectado, la acción queda pendiente y se hace en cuanto entra; si algo falla, le llega un mensaje privado.
+- **Invitaciones:** el dueño o un oficial invita desde Discord; al invitado le llegan botones Aceptar/Rechazar por privado (o en el canal si tiene los privados cerrados). Caducan a los 7 días.
 - **Un rol de Discord por team**, con su nombre y color de FTB; si cambian en el juego, el rol cambia también. Los miembros con el Discord vinculado reciben el rol de su team y pierden los de los demás: si alguien se pone o se quita a mano un rol de team, el bot lo deshace. Cuando un team desaparece, su rol se borra (si lo creó el bot).
 - **En el juego** cada miembro sale como `[Team] Nombre` en el chat, la lista de jugadores (Tab) y encima de la cabeza (corchetes en gris, el nombre del team en su color). Para eso el bot usa un team normal de Minecraft por cada team de FTB, llamado `ftb_` + el principio de su id. No los toques con `/team`: el bot los rehace.
 - Los invitados y aliados de FTB no cuentan como miembros.
@@ -353,7 +361,7 @@ Si algún comando falla de forma inesperada, el bot responde con un **código de
 
 ### Lo que guarda el bot
 
-Quién es quién (vínculos Discord ↔ Minecraft), el rol de Discord de cada team y qué ligas se han anunciado van en la carpeta **`datos/`** del bot (`teams.json`, `ligas.json`), **no** en el servidor. Es la única carpeta en la que escribe. Contiene IDs de Discord y nombres de jugadores: no la compartas (está en `.gitignore`).
+Quién es quién (vínculos Discord ↔ Minecraft), el rol de Discord de cada team, las invitaciones y acciones pendientes, qué ligas se han anunciado y el mensaje fijo de estado van en la carpeta **`datos/`** del bot (`teams.json`, `ligas.json`, `estado_fijo.json`), **no** en el servidor. Si mueves el bot a otra máquina, llévate esta carpeta o todos tendrán que volver a vincularse. Es la única carpeta en la que escribe. Contiene IDs de Discord y nombres de jugadores: no la compartas (está en `.gitignore`).
 
 ---
 
